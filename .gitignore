@@ -1,0 +1,51 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+.vite-temp/
+*.tsbuildinfo
+
+# Logs, caches and temporary files
+*.log
+.cache/
+tmp/
+temp/
+*.tmp
+
+# Verification screenshots and scratch output
+shots*/
+screenshots/
+verify-tmp/
+test-results/
+playwright-report/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*
+secrets*
+
+# Browser profiles
+chrome-profile*/
+user-data-dir*/
+.playwright/
+
+# Browser-local incident data exported from the app (records stay in IndexedDB and localStorage)
+exports/
+*-backup*.json
+*-export*.json
+*-timeline*.pdf
+*-SITREP-*.pdf
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+.claude/
