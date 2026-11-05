@@ -1,0 +1,8 @@
+{
+  "fire_initial": "On confirmation of a fire involving pressurized hydrocarbon equipment, the priority is to protect people, stop the feed of inventory to the fire where this can be done safely, and cool adjacent equipment exposed to radiant heat.",
+  "fire_confirm_flow": "Confirm water flow at the protected equipment",
+  "depress_prepare": "Before an emergency depressurization is initiated, confirm that the intended relief route is available and that personnel are clear of the discharge path.",
+  "depress_initiate": "Initiate depressurization only after the relief route has been confirmed available and the Incident Manager or their delegate has recorded the decision.",
+  "depress_alternative": "Where the normal relief route is unavailable, an alternative route may be used only after its availability and isolation status have been confirmed.",
+  "depress_monitor": "Monitor vessel pressure and temperature, and the relief route pressure, until the trend has been sustained for a period agreed with the Incident Manager."
+}
