@@ -138,7 +138,7 @@ await sleep(800);
 if (want('core')) {
   await step('navigation: exact tabs in order; no Records / Site Knowledge / Incident History; Assistant is a header control', async () => {
     const tabs = await page.locator('[data-testid="nav"] button').allTextContents();
-    assert(JSON.stringify(tabs.map((t) => t.replace(/\d+$/, '').trim())) === JSON.stringify(['Situation', 'Sit. Rep', 'Agent Log', 'Knowledge']), `tabs: ${tabs.join(' | ')}`);
+    assert(JSON.stringify(tabs.map((t) => t.replace(/\d+$/, '').trim())) === JSON.stringify(['Overview', 'Situation', 'Sit. Rep', 'Agent Log', 'Knowledge']), `tabs: ${tabs.join(' | ')}`);
     assert((await page.locator('[data-testid="assistant-toggle"]').count()) === 1, 'assistant toggle in header');
     await nav('knowledge');
     assert(!(await page.textContent('[data-testid="knowledge-tabs"]')).includes('Assistant'), 'Assistant not inside Knowledge');

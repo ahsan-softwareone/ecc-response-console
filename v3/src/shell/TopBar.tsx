@@ -1,10 +1,10 @@
-import { USER } from '../data/scenario';
 import { useDerived } from '../lib/derive';
 import { clock, elapsedParts, pad2, useNow } from '../lib/time';
-import { useStore, type Nav } from '../store';
+import { PERSONAS, useStore, type Nav } from '../store';
 import { IconButton, Popover } from '../ui/ui';
 
 const NAV: { id: Nav; label: string }[] = [
+  { id: 'overview', label: 'Overview' },
   { id: 'situation', label: 'Situation' },
   { id: 'sitrep', label: 'Sit. Rep' },
   { id: 'agentlog', label: 'Agent Log' },
@@ -44,6 +44,9 @@ export function TopBar() {
   const setTheme = useStore((s) => s.setTheme);
   const role = useStore((s) => s.role);
   const setRole = useStore((s) => s.setRole);
+  const persona = useStore((s) => s.persona);
+  const signInAs = useStore((s) => s.signInAs);
+  const P = PERSONAS[persona];
   const assistantOpen = useStore((s) => s.assistantOpen);
   const setAssistantOpen = useStore((s) => s.setAssistantOpen);
   const d = useDerived();
@@ -69,17 +72,21 @@ export function TopBar() {
           <AssistantIcon open={assistantOpen} /><span className="assist-label">Assistant</span>
         </button>
         <Popover width={300} trigger={(open, toggle) => (
-          <button className="user" onClick={toggle} aria-expanded={open} data-testid="user-menu" title={`${USER.name} · ${role === 'admin' ? 'Admin (prototype role)' : USER.role}`}>
-            <div className="av" aria-hidden="true">NA</div>
+          <button className="user" onClick={toggle} aria-expanded={open} data-testid="user-menu" title={`${P.name} · ${role === 'admin' ? 'Admin (prototype role)' : P.role}`}>
+            <div className="av" aria-hidden="true">{P.name.split(/[ .-]+/).filter(Boolean).map((x) => x[0]).slice(0, 2).join('')}</div>
             <div className="user-text">
-              <div className="n">{USER.name}</div>
-              <div className="r">{role === 'admin' ? 'Admin (prototype role)' : `${USER.role} · ECC`}</div>
+              <div className="n">{P.name}</div>
+              <div className="r">{role === 'admin' ? 'Admin (prototype role)' : `${P.role} · ECC`}</div>
             </div>
           </button>
         )}>
           {() => (
             <>
-              <div className="head"><div style={{ fontWeight: 600 }}>{USER.name}</div><div className="sidenote">{role === 'admin' ? 'Admin (prototype role)' : USER.role} · {USER.note}</div></div>
+              <div className="head"><div style={{ fontWeight: 600 }}>{P.name}</div><div className="sidenote">{role === 'admin' ? 'Admin (prototype role)' : P.role} · {P.note}</div></div>
+              <div className="sep" />
+              <div className="head label">Prototype sign-in</div>
+              <div style={{ padding: '0 10px 6px' }}><span className="seg"><button aria-pressed={persona === 'shift-manager'} onClick={() => signInAs('shift-manager')} data-testid="persona-shift">Shift Manager</button><button aria-pressed={persona === 'incident-manager'} onClick={() => signInAs('incident-manager')} data-testid="persona-im">Incident Manager</button></span></div>
+              <div className="sidenote" style={{ padding: '0 10px 8px' }}>Signing in as the Incident Manager opens the Incident Overview. It does not transfer command; that stays a manual, recorded step.</div>
               <div className="sep" />
               <div className="head label">Prototype role switch</div>
               <div style={{ padding: '0 10px 6px' }}><span className="seg"><button aria-pressed={role === 'user'} onClick={() => setRole('user')} data-testid="role-user">User</button><button aria-pressed={role === 'admin'} onClick={() => setRole('admin')} data-testid="role-admin">Admin</button></span></div>

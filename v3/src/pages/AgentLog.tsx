@@ -166,11 +166,18 @@ function StatusDot({ s }: { s: 'done' | 'error' | 'waiting' }) {
 }
 
 /** Business view: what happened and why it matters, in plain words. */
+function ExchangeLink({ t }: { t: AgentEvent }) {
+  const openAssistantFor = useStore((s) => s.openAssistantFor);
+  if (!t.meta?.investigationId) return null;
+  return <button className="link" style={{ alignSelf: 'flex-start' }} onClick={() => openAssistantFor({ focus: String(t.meta!.investigationId) })} data-testid="agent-open-exchange">Open full exchange</button>;
+}
+
 function BusinessDetail({ t }: { t: AgentEvent }) {
   const acc = businessAccount(t); const impacts = impactOf(t); const oc = outcomeOf(t);
   return (
     <div className="detail" data-testid="business-detail">
       <div><h3>What the agent did</h3><p>{acc.headline}</p></div>
+      <ExchangeLink t={t} />
       <dl className="kv" data-testid="task-summary">
         <dt>Category</dt><dd>{categoryOf(t)}</dd>
         <dt>Outcome</dt><dd>{OUTCOME_LABEL[oc]}{oc === 'ongoing' ? ' — still monitoring' : ''}</dd>
@@ -193,6 +200,7 @@ function TaskDetail({ t }: { t: AgentEvent }) {
   return (
     <div className="detail" data-testid="task-detail">
       <div><h3>What the agent did</h3><p>{t.detail}</p></div>
+      <ExchangeLink t={t} />
       <dl className="kv" data-testid="task-summary">
         <dt>Category</dt><dd>{categoryOf(t)}</dd>
         <dt>Sources checked</dt><dd>{t.sources.join(', ') || '—'}</dd>

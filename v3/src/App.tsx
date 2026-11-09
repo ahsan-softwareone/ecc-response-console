@@ -13,11 +13,14 @@ import { Knowledge } from './pages/Knowledge';
 import { Assistant } from './assistant/Assistant';
 import { ViewerOverlay } from './viewer/DocViewer';
 import { TrendOverlay } from './situation/TrendOverlay';
+import { setClockSkew } from './lib/time';
 import { useRecordSync } from './record/sync';
+import { useInvestigationRunner } from './investigate/useRunner';
+import { Overview, ReturnToOverview } from './pages/Overview';
 import { buildIndex } from './lib/indexer';
 import { Toast } from './ui/ui';
 import { retrieval } from './lib/retrieval';
-(window as unknown as { __ecc: unknown }).__ecc = { retrieval, store: useStore };
+(window as unknown as { __ecc: unknown }).__ecc = { retrieval, store: useStore, setClockSkew };
 
 
 export function App() {
@@ -32,7 +35,10 @@ export function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   useEffect(() => { void loadLocalData(); }, [loadLocalData]);
   useRecordSync();
+  useInvestigationRunner();
   useIndexBuild(storageReady);
+  // Signing in as the Incident Manager lands on the briefing; a reload counts as signing in again.
+  useEffect(() => { if (storageReady && useStore.getState().persona === 'incident-manager') useStore.getState().setNav('overview'); }, [storageReady]);
   useEffect(() => { if (!toast) return; const t = window.setTimeout(() => setToast(null), 6000); return () => window.clearTimeout(t); }, [toast, setToast]);
 
   // On Situation the Assistant overlays when pushing would squeeze the workspace below usable minimums.
@@ -47,10 +53,11 @@ export function App() {
   return (
     <div className="app" data-nav={nav} data-assistant={assistantOpen ? (overlay ? 'overlay' : 'push') : 'closed'}>
       <TopBar />
-      <div className="statusstack"><StatusBar /><NotificationBanner /><AgentNotice /></div>
+      <div className="statusstack"><StatusBar /><NotificationBanner /><AgentNotice /><ReturnToOverview /></div>
       <div className="main-row">
         <div className="main" style={{ marginRight: assistantOpen && !overlay ? assistantWidth : 0 }}>
-          {noIncident && nav !== 'knowledge' && <NoIncident />}
+          {noIncident && nav !== 'knowledge' && <NoIncident overview={nav === 'overview'} />}
+          {!noIncident && nav === 'overview' && <Overview />}
           {!noIncident && nav === 'situation' && <Situation />}
           {!noIncident && nav === 'sitrep' && <SitRep />}
           {!noIncident && nav === 'agentlog' && <AgentLog />}

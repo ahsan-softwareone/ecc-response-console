@@ -72,6 +72,14 @@ export interface AlertDef {
   equipmentId: string;
   severity: Severity;
   title: string;                 // concise log description
+  /** Short plain-language headline and qualifier for the Overview's sequence of events. */
+  headline?: string;
+  qualifier?: string;
+  /** The equipment's condition after this alert, for the Overview's status card, and what qualifies it. */
+  status?: string;
+  statusNote?: string;
+  /** The sentence for the Overview headline while this alert describes the item's current state. */
+  brief?: string;
   offsetSec: number;             // seconds after the step reveal
   watcherId?: string;
   measurement?: string;          // "18.3 bar vs High limit 18.0 bar"

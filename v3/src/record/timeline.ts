@@ -2,12 +2,12 @@
 // known at" a time, supersession/gap derivations and SITREP generation as of a time.
 import type { DecisionEvent, IncidentRecord, RecommendationEvent, RecordEvent, RecordKind, SitrepSections } from './types';
 
-export type Category = 'Agent control' | 'Configuration' | 'Lifecycle' | 'Resolution' | 'Notification' | 'Equipment' | 'Measurement' | 'Observation' | 'Acknowledgement' | 'Alert' | 'Finding' | 'Recommendation' | 'Decision' | 'Reported action' | 'Outcome' | 'Information gap' | 'Agent activity' | 'Reference' | 'Knowledge' | 'Report version' | 'Stabilization' | 'Closure' | 'Correction' | 'Lesson learned';
+export type Category = 'Incident severity' | 'Investigation' | 'Agent control' | 'Configuration' | 'Lifecycle' | 'Resolution' | 'Notification' | 'Equipment' | 'Measurement' | 'Observation' | 'Acknowledgement' | 'Alert' | 'Finding' | 'Recommendation' | 'Decision' | 'Reported action' | 'Outcome' | 'Information gap' | 'Agent activity' | 'Reference' | 'Knowledge' | 'Report version' | 'Stabilization' | 'Closure' | 'Correction' | 'Lesson learned';
 export const CATEGORY: Record<RecordKind, Category> = {
-  'agent-control': 'Agent control', config: 'Configuration', lifecycle: 'Lifecycle', resolution: 'Resolution',
+  severity: 'Incident severity', investigation: 'Investigation', 'agent-control': 'Agent control', config: 'Configuration', lifecycle: 'Lifecycle', resolution: 'Resolution',
   notification: 'Notification', equipment: 'Equipment', measurement: 'Measurement', observation: 'Observation', acknowledgement: 'Acknowledgement', alert: 'Alert', finding: 'Finding', recommendation: 'Recommendation', decision: 'Decision', report: 'Reported action', outcome: 'Outcome', gap: 'Information gap', agent: 'Agent activity', reference: 'Reference', knowledge: 'Knowledge', 'report-version': 'Report version', stabilization: 'Stabilization', closure: 'Closure', correction: 'Correction', lesson: 'Lesson learned',
 };
-export const CATEGORIES: Category[] = ['Notification', 'Equipment', 'Measurement', 'Observation', 'Acknowledgement', 'Alert', 'Finding', 'Recommendation', 'Decision', 'Reported action', 'Outcome', 'Information gap', 'Agent activity', 'Reference', 'Knowledge', 'Report version', 'Stabilization', 'Closure', 'Correction', 'Lesson learned', 'Agent control', 'Configuration', 'Lifecycle', 'Resolution'];
+export const CATEGORIES: Category[] = ['Incident severity', 'Notification', 'Equipment', 'Measurement', 'Observation', 'Investigation', 'Acknowledgement', 'Alert', 'Finding', 'Recommendation', 'Decision', 'Reported action', 'Outcome', 'Information gap', 'Agent activity', 'Reference', 'Knowledge', 'Report version', 'Stabilization', 'Closure', 'Correction', 'Lesson learned', 'Agent control', 'Configuration', 'Lifecycle', 'Resolution'];
 
 export interface TimelineRow { ev: RecordEvent; category: Category; correctedBy?: RecordEvent }
 export interface TimelineFilter { query?: string; categories?: Category[]; asOf?: number }
@@ -84,11 +84,19 @@ export function generateSitrep(r: IncidentRecord, asOf: number): SitrepSections 
   const recs = activeRecommendations(r, asOf);
   const narrativeText = narrative?.detail?.split('\n') ?? [];
   const nextLine = narrativeText.find((l) => l.startsWith('Next: '))?.slice(6);
-  const situation = [assessment ? assessment.title : (narrativeText[0] ?? 'No assessment recorded yet.'), open.length ? `Open Critical/High conditions: ${open.map((a) => a.title).join('; ')}.` : 'No open Critical or High conditions.', r.stabilization && r.stabilization.t <= asOf ? `Stabilization recorded ${fmt(r.stabilization.t)} by ${r.stabilization.by}: ${r.stabilization.rationale}` : ''].filter(Boolean).join('\n');
+  const situationLines = [assessment ? assessment.title : (narrativeText[0] ?? 'No assessment recorded yet.'), open.length ? `Open Critical/High conditions: ${open.map((a) => a.title).join('; ')}.` : 'No open Critical or High conditions.', r.stabilization && r.stabilization.t <= asOf ? `Stabilization recorded ${fmt(r.stabilization.t)} by ${r.stabilization.by}: ${r.stabilization.rationale}` : ''].filter(Boolean);
   const response = [narrativeText.find((l) => l.startsWith('Response: '))?.slice(10) ?? '', reports.length ? `Reported actions: ${reports.map((e) => `${fmt(e.t)} ${e.title} (${e.by ?? 'field'}, ${(e as { status?: string }).status ?? 'reported'})`).join('; ')}.` : 'No field actions reported.', outcomes.length ? `Observed outcomes: ${outcomes.map((e) => `${fmt(e.t)} ${e.title}`).join('; ')}.` : 'No observed outcomes yet.'].filter(Boolean).join('\n');
   const decisionsText = decisions.length ? decisions.map((d) => { const note = decisionNote(r, d, asOf); return `${fmt(d.t)} ${d.title} — ${d.by}${d.rationale ? `: ${d.rationale}` : ''}${note ? ` [${note}]` : ''}`; }).join('\n') : 'No decisions recorded.';
   const outstanding = [...open.map((a) => `${a.severity === 'critical' ? 'Critical' : 'High'}: ${a.title}`), ...openGaps.map((g) => g.title)];
+  // Reported observations and unreconciled conflicts only. The question-and-answer exchange stays in the record, not the SITREP.
+  const reported = evs.filter((e) => e.kind === 'observation' && e.meta?.userSubmitted);
+  for (const inv of r.investigations ?? []) {
+    const latest = [...inv.responses].reverse().find((x) => x.t <= asOf);
+    if (latest) for (const c of latest.conflicts) outstanding.push(`Unreconciled evidence: ${c.a} / ${c.b}`);
+  }
+  const reportedLines = reported.map((e) => `Reported, not independently verified: "${e.title}" (${String(e.meta?.sourceLabel ?? 'reported')}, received ${fmt(e.t)}).`);
   const priorities = [nextLine ? `Next: ${nextLine}` : '', ...recs.map((x) => `${x.summary}${x.prerequisites.length ? ` (outstanding: ${x.prerequisites.join('; ')})` : ''}`)].filter(Boolean);
+  const situation = [...situationLines, ...reportedLines].join('\n');
   return { situation, response, decisions: decisionsText, outstanding: outstanding.length ? outstanding.join('\n') : 'None recorded.', priorities: priorities.length ? priorities.join('\n') : 'No current recommendation.' };
 }
 

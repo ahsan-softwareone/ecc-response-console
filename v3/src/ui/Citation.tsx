@@ -16,7 +16,7 @@ export interface CitationRef {
  * Secondary = Open original (whole document at the same pinned revision).
  * A reference without a location offers Open original only and says so.
  */
-export function Citation({ cite, origin, dock = false, plain = false, testId }: { cite: CitationRef; origin: string; dock?: boolean; plain?: boolean; testId?: string }) {
+export function Citation({ cite, origin, dock = false, plain = false, actions = false, testId }: { cite: CitationRef; origin: string; dock?: boolean; plain?: boolean; /** The row already names the document: show only the two actions. */ actions?: boolean; testId?: string }) {
   const docs = useAllDocs();
   const openViewer = useStore((s) => s.openViewer);
   const viewer = useStore((s) => s.viewer);
@@ -32,6 +32,12 @@ export function Citation({ cite, origin, dock = false, plain = false, testId }: 
   const original: ViewerTarget = { ...base, label: '', quote: undefined, region: undefined, locate: 'page-only', page: cite.page ?? 1 };
   const active = !!viewer && viewer.docId === cite.docId && viewer.revision === cite.revision && viewer.page === base.page;
   const tip = `${entry.title} · Rev ${cite.revision}${newer ? ` (Rev ${entry.current.revision} now current)` : ''}${hasLocation ? ` · view evidence at p.${base.page}` : ' · location not recorded'}`;
+  if (actions) return (
+    <span className="cite-actions" data-testid={testId ?? `cite-${cite.docId}`} data-rev={cite.revision} data-newer={newer} data-location={hasLocation}>
+      {hasLocation ? <button className="btn sm" aria-pressed={active} title={tip} onClick={() => openViewer(base)} data-testid="cite-view">View evidence</button> : <span className="sidenote">Location not recorded</span>}
+      <button className="btn sm" title="Open the original document at this revision" onClick={() => openViewer(original)} data-testid="cite-original">Open original</button>
+    </span>
+  );
   return (
     <span className={`cite ${hasLocation ? '' : 'no-loc'}`} data-testid={testId ?? `cite-${cite.docId}`} data-rev={cite.revision} data-newer={newer} data-location={hasLocation}>
       <button className="ev" aria-pressed={active} title={tip} onClick={() => openViewer(hasLocation ? base : original)} data-testid="cite-view">

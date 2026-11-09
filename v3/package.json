@@ -9,7 +9,9 @@
     "preview": "vite preview --port 5189 --strictPort",
     "docs": "node scripts/make-docs.mjs",
     "verify": "node scripts/verify.mjs",
-    "verify:lifecycle": "node scripts/verify-lifecycle.mjs"
+    "verify:lifecycle": "node scripts/verify-lifecycle.mjs",
+    "verify:investigation": "node scripts/verify-investigation.mjs",
+    "verify:overview": "node scripts/verify-overview.mjs"
   },
   "dependencies": {
     "pdfjs-dist": "5.4.624",

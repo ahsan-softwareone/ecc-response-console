@@ -45,7 +45,7 @@ export async function buildIndex(records: IncidentRecord[], uploads: UploadedDoc
       pages.forEach((text, i) => { if (text.length > 20) units.push({ id: `${u.id}:${u.revision}:${i + 1}`, text, source: { kind: 'document', id: u.id, title: u.title, site: u.site, contentType: contentTypeOf(u.type), revision: u.revision, page: i + 1, approval: u.declaredStatus === 'not-established' ? 'not-established' : 'declared', locate: 'exact' } }); });
     }
     for (const r of records) for (const e of r.events) {
-      if (e.kind === 'measurement' || e.kind === 'agent' || e.kind === 'report-version') continue;
+      if (e.kind === 'measurement' || e.kind === 'agent' || e.kind === 'report-version' || e.kind === 'investigation') continue; // ECC's own answers are not evidence for later answers
       const text = `${CATEGORY[e.kind]}: ${e.title}${e.detail ? `. ${e.detail}` : ''}${e.by ? ` (${e.by})` : ''}`;
       units.push({ id: `${r.id}:${e.id}`, text, source: { kind: 'incident', id: r.id, title: `${r.id} · ${r.title}`, site: r.site, contentType: 'incident', approval: 'not-established', incidentMode: r.mode, incidentStatus: r.status, eventId: e.id, eventTitle: e.title, category: CATEGORY[e.kind], t: e.t, incidentStartedAt: r.startedAt, locate: 'page-only' } });
     }

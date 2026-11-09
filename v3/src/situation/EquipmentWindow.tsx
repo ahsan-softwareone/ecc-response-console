@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { EQUIPMENT } from '../data/scenario';
 import type { Equipment, WatcherDef } from '../data/types';
 import { ATTENTION, SEVERITY_ORDER, useDerived, type AlertView, type Derived } from '../lib/derive';
@@ -54,7 +54,14 @@ function EquipmentCard({ equipment, d }: { equipment: Equipment; d: Derived }) {
   const overrides = useStore((s) => s.watcherOverrides);
   const setWatcher = useStore((s) => s.setWatcher);
   const removeEquipment = useStore((s) => s.removeEquipment);
+  const openAssistantFor = useStore((s) => s.openAssistantFor);
+  const reportedInv = useStore((s) => s.records[s.incidentId]?.investigations?.filter((i) => i.kind === 'observation' && i.context.equipmentId === equipment.id).pop());
+  const reported = useStore((s) => (reportedInv ? s.records[s.incidentId]?.events.find((e) => e.id === reportedInv.observationEventId) : undefined));
+  const selectConcern = useStore((s) => s.selectConcern);
   const filtered = useStore((s) => s.logFilters.equipment.includes(equipment.id));
+  const flash = useStore((s) => s.flashEquipment === equipment.id);
+  const cardRef = useRef<HTMLElement>(null);
+  useEffect(() => { if (!flash || !cardRef.current) return; cardRef.current.scrollIntoView({ block: 'nearest' }); cardRef.current.focus(); const t = window.setTimeout(() => useStore.getState().setFlashEquipment(null), 2400); return () => window.clearTimeout(t); }, [flash]);
   const toggleEquipmentFilter = useStore((s) => s.toggleEquipmentFilter);
   const openViewer = useStore((s) => s.openViewer);
   const startedAt = useStore((s) => s.startedAt);
@@ -72,7 +79,7 @@ function EquipmentCard({ equipment, d }: { equipment: Equipment; d: Derived }) {
   const docs = equipment.drawings.map((dr) => ({ dr, doc: d.docById.get(dr.docId)! }));
 
   return (
-    <article className={`card ${filtered ? 'filtered' : ''}`} data-testid={`card-${equipment.id}`} aria-label={`${equipment.id} ${equipment.name}`}>
+    <article ref={cardRef} tabIndex={-1} className={`card ${filtered ? 'filtered' : ''} ${flash ? 'focus-flash' : ''}`} data-flash={flash} data-testid={`card-${equipment.id}`} aria-label={`${equipment.id} ${equipment.name}`}>
       <header className="card-h">
         <div className="grow">
           <div><span className="tag">{equipment.id}</span> <span className="name">{equipment.name}</span></div>
@@ -100,6 +107,11 @@ function EquipmentCard({ equipment, d }: { equipment: Equipment; d: Derived }) {
           )}
         </Popover>
       </header>
+      {reported && (
+        <button className="card-reported" onClick={() => selectConcern(reportedInv?.id ?? null, 'response')} title="Reported evidence. It has not changed this equipment's readings or alerts. Open its follow-through." data-testid={`reported-${equipment.id}`} data-state={reportedInv?.responses[reportedInv.responses.length - 1]?.reconciliation ?? 'pending'}>
+          <span className="label">Reported · not verified</span><span className="grow">{reported.title}</span>{(() => { const rec = reportedInv?.responses[reportedInv.responses.length - 1]?.reconciliation; return rec === 'conflict' ? <span className="chip outline">Conflicts with a reading</span> : rec === 'consistent' ? <span className="chip outline">Consistent with a reading</span> : null; })()}
+        </button>
+      )}
       {visible.map((w) => <WatcherRow key={w.def.id} w={w.def} limitLabel={w.limitLabel} windowMin={w.windowMin} clock={clock} now={now} alerts={alerts} onChange={(o) => setWatcher(w.def.id, o)} />)}
       {visible.length === 0 && <div className="empty">No watchers shown. Monitoring continues for {ws.length} variables.</div>}
       <footer className="card-f">
@@ -116,7 +128,9 @@ function EquipmentCard({ equipment, d }: { equipment: Equipment; d: Derived }) {
             </>
           )}
         </Popover>
-        {hidden.length > 0 && <span className="sidenote">{hidden.length} hidden · still monitored</span>}
+        {hidden.length > 0 && <span className="sidenote" title={`${hidden.length} hidden · still monitored`}>{hidden.length} hidden · still monitored</span>}
+        <span className="spacer" style={{ flex: 1 }} />
+        <button className="btn quiet sm" onClick={() => openAssistantFor({ mode: 'ask', context: { equipmentId: equipment.id } })} title={`Ask about ${equipment.id} in the Assistant`} data-testid={`ask-about-${equipment.id}`}><Icon name="ask" size={13} /> Ask about this</button>
       </footer>
     </article>
   );

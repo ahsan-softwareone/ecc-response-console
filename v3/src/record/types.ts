@@ -1,12 +1,13 @@
 // Self-contained incident record. Everything Sit. Rep, Knowledge → Incidents and the
 // exports show comes from this structure, never from scenario.ts at render time.
 import type { EvidenceStatus, ExecutionStatus, Severity } from '../data/types';
+import type { ContentType, Passage } from '../lib/retrieval';
 
 export type RecordKind =
   | 'notification' | 'equipment' | 'measurement' | 'observation' | 'alert' | 'finding'
   | 'recommendation' | 'decision' | 'report' | 'outcome' | 'gap' | 'agent' | 'reference'
   | 'knowledge' | 'report-version' | 'stabilization' | 'closure' | 'correction' | 'lesson' | 'acknowledgement'
-  | 'agent-control' | 'config' | 'lifecycle' | 'resolution';
+  | 'agent-control' | 'config' | 'lifecycle' | 'resolution' | 'investigation' | 'severity';
 
 export interface PinnedEvidence { docId: string; title: string; number: string; revision: string; page: number; label: string; locate: 'exact' | 'ambiguous' | 'page-only'; quote?: string; region?: { page: number; x: number; y: number; w: number; h: number } }
 
@@ -62,6 +63,68 @@ export interface ClosureRecord { t: number; by: string; rationale: string; outst
 /** Enough simulation state to resume a set-aside or reopened incident. */
 export interface SimSnapshot { startedAt: number; revealedAt: number[]; dashboard: string[]; watcherOverrides: Record<string, unknown>; alertUser: Record<string, unknown> }
 
+/** How an observation came to ECC. Submission alone never establishes independent verification. */
+export type ObservationSource = 'personal' | 'field' | 'control-room' | 'other';
+export const OBSERVATION_SOURCE: Record<ObservationSource, string> = { personal: 'Personally observed', field: 'Field report', 'control-room': 'Control-room reading', other: 'Other' };
+
+/** One piece of incident evidence an investigation looked at. Opens its own source details. */
+export interface EvidenceItem { id: string; kind: 'reading' | 'report' | 'observation' | 'alert' | 'finding' | 'gap' | 'outcome'; stance: 'supports' | 'conflicts' | 'context'; label: string; text: string; t?: number; source?: string; status?: string; watcherId?: string; equipmentId?: string; alertId?: string; eventId?: string }
+export type InvestigationState = 'answered' | 'conflict' | 'insufficient' | 'passages' | 'empty' | 'error';
+export interface InvestigationResponse {
+  id: string; revision: number;
+  /** When analysis began and finished, and the point in time the evidence was read at. */
+  startedAt: number; t: number; asOf: number;
+  state: InvestigationState;
+  heading: string;
+  finding: string;
+  evidence: EvidenceItem[];
+  documents: PinnedEvidence[];
+  /** Matching passages kept with the response; nothing here is an instruction. */
+  passages: Passage[];
+  indexed: number;
+  retrievalError?: string;
+  conflicts: { a: string; b: string; note: string }[];
+  missing: string[];
+  uncertainty: string[];
+  /** Only an existing, still-applicable recommendation. Decisions stay in the response workspace. */
+  suggestion?: { alertId: string; summary: string; equipmentId?: string };
+  /** A recommendation on the same equipment that this report does not change. Shown as a link, not as the response. */
+  related?: { alertId: string; summary: string };
+  noResponseReason?: string;
+  /** ECC could not interpret the claim. A person needs to review it. */
+  humanReview?: boolean;
+  /** What the cited documents were consulted for. */
+  docPurpose?: string;
+  /** Current recommendations whose actions depend on what was reported. They are not changed. */
+  affected?: { alertId: string; summary: string }[];
+  reconciliation?: 'conflict' | 'consistent' | 'not-compared';
+  checked: { label: string; detail: string }[];
+  /** Equipment whose new evidence can lead to a revised assessment. */
+  tracks: string[];
+  basis: string;
+  updateReason?: string;
+  run: { number: number; configVersion: number };
+}
+export interface Investigation {
+  id: string; number: number; kind: 'question' | 'observation';
+  t: number; by: string;
+  /** The user's wording. */
+  text: string;
+  observationEventId?: string;
+  context: { incidentId: string; equipmentId?: string; alertId?: string; alertTitle?: string; location?: string };
+  scope: { sites: string[]; types: ContentType[] };
+  status: 'queued' | 'running' | 'needs-clarification' | 'complete' | 'failed';
+  /** Why the last analysis could not finish. The entry is kept and can be retried. */
+  failure?: string;
+  /** The report used urgent wording. This says nothing about how certain the evidence is. */
+  urgentWording?: boolean;
+  clarification?: { question: string; options: { label: string; equipmentId: string }[]; needsBasis?: boolean; askedAt?: number; answer?: string; answerText?: string; answerLocation?: string; answeredAt?: number; answeredBy?: string };
+  responses: InvestigationResponse[];
+}
+
+/** Incident-level severity on the configured scale. */
+export interface IncidentSeverity { level: string; label: string; scale: string; by: string; t: number; rationale: string }
+
 export interface IncidentRecord {
   schema: 'ecc-incident/1';
   id: string;
@@ -96,6 +159,11 @@ export interface IncidentRecord {
   linkedIncidents?: { id: string; title: string; t: number; by: string }[];
   importedFrom?: string;
   sim?: SimSnapshot;
+  /** Incident-level severity as assessed by a person. Separate from alert severity and lifecycle status. */
+  severity?: IncidentSeverity;
+  severityHistory?: IncidentSeverity[];
+  /** Human-initiated questions and observations, with their investigations. */
+  investigations?: Investigation[];
   lessons: { id: string; t: number; by: string; text: string }[];
   /** Document revisions explicitly referenced in this incident. */
   references: { docId: string; revision: string; t: number; by: string; note: string }[];

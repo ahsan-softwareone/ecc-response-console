@@ -3,7 +3,7 @@
 import { EQUIPMENT } from '../data/scenario';
 import type { AgentEvent } from '../record/types';
 
-export const AGENT_CATEGORIES = ['Procedures & documents', 'Equipment context', 'Process monitoring', 'Conflicting reports', 'Assessment updates', 'Calculations', 'Source availability & retries'] as const;
+export const AGENT_CATEGORIES = ['Investigations', 'Procedures & documents', 'Equipment context', 'Process monitoring', 'Conflicting reports', 'Assessment updates', 'Calculations', 'Source availability & retries'] as const;
 export type AgentCategory = typeof AGENT_CATEGORIES[number];
 export type Outcome = 'completed' | 'ongoing' | 'failed' | 'retried';
 export const OUTCOME_LABEL: Record<Outcome, string> = { completed: 'Completed', ongoing: 'Ongoing', failed: 'Failed', retried: 'Retried' };
@@ -13,6 +13,7 @@ const ops = (t: AgentEvent) => t.technical.steps.flatMap((s) => s.operations);
 /** Category from what the task actually did (sources used, kind), not its generic label. */
 export function categoryOf(t: AgentEvent): AgentCategory {
   const o = ops(t); const srcs = o.map((x) => x.source);
+  if (t.taskKind === 'investigation') return 'Investigations';
   if (t.taskKind === 'equipment') return 'Equipment context';
   if (t.taskKind === 'conflict') return 'Conflicting reports';
   if (t.taskKind === 'monitoring') return 'Process monitoring';
@@ -67,6 +68,7 @@ function plainTags(text: string): string {
 export function businessAccount(t: AgentEvent): { headline: string; steps: { name: string; done: boolean }[] } {
   const cat = categoryOf(t); const o = ops(t); const first = o[0];
   let headline = t.detail ?? t.title;
+  if (cat === 'Investigations') headline = t.headline;
   if (cat === 'Procedures & documents' && t.documents.length) headline = t.taskKind === 'source' ? (first?.detail ?? headline) : `Reviewed ${t.documents.join(', ')}.`;
   if (cat === 'Equipment context' && o.length) headline = `Identified the equipment involved: ${o[o.length - 1].detail}`;
   if (cat === 'Process monitoring') headline = t.status === 'waiting' ? `Monitoring process values for the equipment on the dashboard.` : `Analysed process trends: ${first?.detail ?? ''}`;

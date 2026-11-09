@@ -3,6 +3,7 @@
 import { PdfDoc, download } from '../lib/pdfwrite';
 import { dateTime, elapsedParts, pad2 } from '../lib/time';
 import { CATEGORY, decisionNote, timeline } from './timeline';
+import { followThroughLine, followThroughOf } from '../investigate/followThrough';
 import type { DecisionEvent, MeasurementEvent } from './types';
 import type { IncidentRecord, PinnedEvidence, ReportVersion } from './types';
 
@@ -26,7 +27,8 @@ export function timelineReportPdf(r: IncidentRecord, asOf: number): Blob {
     const note = e.kind === 'decision' ? decisionNote(r, e as DecisionEvent, asOf) : null;
     const changes = e.kind === 'measurement' ? ((e as MeasurementEvent).changes ?? []).join('; ') : '';
     const full = e.kind === 'measurement' ? `All values: ${(e as MeasurementEvent).values.map((v) => `${v.watcherId.replace(':', ' ')} ${v.value}${v.unit === 'status' ? '' : ` ${v.unit}`}`).join(', ')}` : '';
-    const sub = [e.detail, changes, full, e.by ? `By ${e.by}` : '', evidenceLine(e.evidence), note ? `[${note}]` : '', row.correctedBy ? `Corrected ${clk(row.correctedBy.t)}: ${row.correctedBy.title}` : '', e.corrects ? `Correction of an earlier entry (original retained)` : ''].filter(Boolean).join(' · ');
+    const inv = e.kind === 'observation' && e.meta?.investigationId ? r.investigations?.find((i) => i.id === e.meta!.investigationId) : undefined;
+    const sub = [e.detail, inv ? followThroughLine(inv) : '', changes, full, e.by ? `By ${e.by}` : '', evidenceLine(e.evidence), note ? `[${note}]` : '', row.correctedBy ? `Corrected ${clk(row.correctedBy.t)}: ${row.correctedBy.title}` : '', e.corrects ? `Correction of an earlier entry (original retained)` : ''].filter(Boolean).join(' · ');
     pdf.row(clk(e.t), CATEGORY[e.kind], e.title, sub || undefined);
   }
   if (r.lessons.length) { pdf.heading('Lessons learned'); for (const l of r.lessons) pdf.text(`• ${l.text}`, { gap: 1 }); }
@@ -67,6 +69,10 @@ export function incidentJson(r: IncidentRecord, exportedAt: number): Blob {
     closure: r.closure ?? null,
     lessons: r.lessons,
     corrections: r.events.filter((e) => e.kind === 'correction'),
+    incidentSeverity: r.severity ?? null,
+    severityHistory: r.severityHistory ?? [],
+    investigations: r.investigations ?? [],
+    observationFollowThrough: (r.investigations ?? []).map(followThroughOf),
     events: r.events,
   };
   return new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
