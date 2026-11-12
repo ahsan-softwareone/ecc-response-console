@@ -2141,3 +2141,10 @@ button.sr-crumb:hover { color: var(--accent-ink); text-decoration: underline; }
 [data-theme="dark"] .ir .ir-h { background: color-mix(in srgb, var(--surface-2) 70%, var(--text) 6%); }
 .ir .ir-sec { gap: 8px; }
 .ir .ir-h, .ir .ir-now .ir-h { margin-bottom: 8px; }
+/* Worklist search */
+.sr-search { display: flex; align-items: center; gap: 6px; color: var(--text-3); }
+.sr-list-b > .sr-search { padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--surface); position: sticky; top: 0; z-index: 1; }
+.sr-search .input { flex: 1; min-width: 0; height: 28px; font-size: 12.5px; }
+.sr-search.compact { margin-left: auto; flex: 0 1 240px; min-width: 160px; }
+.sr-search .sidenote { white-space: nowrap; }
+.sr-search input[type="search"]::-webkit-search-cancel-button { display: none; }

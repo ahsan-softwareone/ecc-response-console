@@ -199,10 +199,15 @@ function IssueList({ room, current, currentUpdate, split, picked }: { room: Room
   const list = useStore((s) => s.room.list);
   const openIssue = useStore((s) => s.openIssue);
   const openUpdate = useOpenUpdate();
-  const items = list === 'open' ? room.open : room.closed;
+  const all = list === 'open' ? room.open : room.closed;
+  // Search: the issue's title, equipment and the wording of its updates.
+  const q = useStore((s) => s.room.issueQuery ?? '');
+  const ql = q.trim().toLowerCase();
+  const items = ql ? all.filter((i) => `${i.title} ${i.equipment.join(' ')} ${i.updates.map((u) => `${u.plain} ${u.text}`).join(' ')}`.toLowerCase().includes(ql)) : all;
   const t = useIncidentNow(5000);
   return (
     <div className="sr-list-b" data-testid="issue-list" data-list={list}>
+      <SearchBar value={q} onChange={(v) => setRoom({ issueQuery: v })} placeholder={`Search ${list === 'open' ? 'open' : 'closed'} issues: title, equipment, updates`} shown={items.length} total={all.length} testId="issue-search" />
       {list === 'open' && room.review.length > 0 && (
         <div className="sr-review" data-testid="review-list">
           <div className="sr-review-h"><Icon name="warn" size={13} />About closed issues <span className="num">{room.review.length}</span><span className="sidenote">New updates about issues you closed. Reopen the issue, or keep it closed.</span></div>
@@ -252,7 +257,8 @@ function IssueList({ room, current, currentUpdate, split, picked }: { room: Room
           </span>
         </button>
       ))}
-      {items.length === 0 && <p className="quiet sr-empty" data-testid="issue-empty">{list === 'open' ? (room.review.length ? 'No open issues. Decide on the updates above.' : 'No open issues. Updates that need a decision, a check or follow-up appear here.') : 'No closed issues yet. A closed issue stays here and can be reopened.'}</p>}
+      {items.length === 0 && ql && all.length > 0 ? <p className="quiet sr-empty" data-testid="issue-nomatch">No {list} issues match “{q.trim()}”. <button className="link" onClick={() => setRoom({ issueQuery: '' })}>Clear search</button></p> : null}
+      {items.length === 0 && !(ql && all.length > 0) && <p className="quiet sr-empty" data-testid="issue-empty">{list === 'open' ? (room.review.length ? 'No open issues. Decide on the updates above.' : 'No open issues. Updates that need a decision, a check or follow-up appear here.') : 'No closed issues yet. A closed issue stays here and can be reopened.'}</p>}
     </div>
   );
 }
@@ -276,7 +282,10 @@ function Feed({ room, issue, only }: { room: RoomData; issue: Issue | null; only
   const of = ORIGIN_FILTER[r.origin] as readonly Origin[] | null;
   // Narrowed to one piece of equipment from its bell or count; the chip clears it.
   const eq = r.feedEquipment ?? null;
-  const rows = room.updates.filter((u) => (!scope || scope.has(u.id)) && (!eq || u.equipmentId === eq) && (!of || of.includes(u.origin)));
+  // Search: the update's wording, its source and its equipment.
+  const fq = (r.feedQuery ?? '').trim().toLowerCase();
+  const matches = (u: Update) => !fq || `${u.plain} ${u.text} ${u.source} ${u.equipmentId ?? ''}`.toLowerCase().includes(fq);
+  const rows = room.updates.filter((u) => (!scope || scope.has(u.id)) && (!eq || u.equipmentId === eq) && (!of || of.includes(u.origin)) && matches(u));
   const inIssue = issue ? new Set(issue.updates.map((u) => u.id)) : null;
   // A filter must never quietly hide what is critical: say how many critical alerts it hides.
   const hiddenCrit = room.updates.filter((u) => u.severity === 'critical' && !rows.includes(u)).length;
@@ -289,9 +298,10 @@ function Feed({ room, issue, only }: { room: RoomData; issue: Issue | null; only
         <span className="seg sm" role="group" aria-label="Show updates from">
           {(['all', 'monitoring', 'people', 'agent'] as const).map((k) => <button key={k} aria-pressed={r.origin === k} onClick={() => setRoom({ origin: k })} data-testid={`origin-${k}`}>{k === 'all' ? 'All' : k === 'monitoring' ? 'Monitoring' : k === 'people' ? 'Field and people' : 'ECC agent'}</button>)}
         </span>
-        {hiddenCrit > 0 && <button className="hiddenind" onClick={() => setRoom({ origin: 'all', feedIssue: null, feedEquipment: null })} title="Critical alerts this filter hides. Select to show all updates." data-testid="feed-hidden-critical"><Icon name="warn" size={12} />{hiddenCrit} critical hidden</button>}
+        {hiddenCrit > 0 && <button className="hiddenind" onClick={() => setRoom({ origin: 'all', feedIssue: null, feedEquipment: null, feedQuery: '' })} title="Critical alerts this filter hides. Select to show all updates." data-testid="feed-hidden-critical"><Icon name="warn" size={12} />{hiddenCrit} critical hidden</button>}
         {eq && <button className="sr-scope on" onClick={() => setRoom({ feedEquipment: null })} title="Show updates for all equipment" data-testid="feed-equipment"><Icon name="filter" size={12} />Only {eq} <span className="num">({rows.length})</span><Icon name="close" size={11} /></button>}
         {scoped && <button className="sr-scope on" onClick={() => setRoom({ feedIssue: null })} title="Show updates from every issue" data-testid="feed-scope"><Icon name="filter" size={12} />Only “{scoped.title}”<Icon name="close" size={11} /></button>}
+        <SearchBar value={r.feedQuery ?? ''} onChange={(v) => setRoom({ feedQuery: v })} placeholder="Search updates" shown={rows.length} total={room.updates.length} testId="feed-search" compact />
       </div>
       <ol className="sr-rows" ref={ref} data-testid="feed-rows">
         {rows.map((u) => {
@@ -315,7 +325,8 @@ function Feed({ room, issue, only }: { room: RoomData; issue: Issue | null; only
             </li>
           );
         })}
-        {rows.length === 0 && <li className="quiet sr-empty" data-testid="feed-empty">{room.updates.length ? 'No updates match. ' : 'No updates yet. Monitoring alerts, field reports and ECC findings appear here as they arrive.'}{room.updates.length > 0 && <button className="link" onClick={() => setRoom({ origin: 'all', feedIssue: null, feedEquipment: null })}>Show all updates</button>}</li>}
+        {rows.length === 0 && fq && <li className="quiet sr-empty" data-testid="feed-nomatch">No updates match “{(r.feedQuery ?? '').trim()}”. <button className="link" onClick={() => setRoom({ feedQuery: '' })}>Clear search</button></li>}
+        {rows.length === 0 && !fq && <li className="quiet sr-empty" data-testid="feed-empty">{room.updates.length ? 'No updates match. ' : 'No updates yet. Monitoring alerts, field reports and ECC findings appear here as they arrive.'}{room.updates.length > 0 && <button className="link" onClick={() => setRoom({ origin: 'all', feedIssue: null, feedEquipment: null, feedQuery: '' })}>Show all updates</button>}</li>}
       </ol>
     </div>
   );
@@ -339,4 +350,16 @@ export function useOpenUpdate() {
     else if (id.startsWith('inv-')) selectConcern(id.slice(4));
     else openUpdate(id);
   };
+}
+
+/** A small search field for a worklist: what is typed filters the list; the count says how much is shown. */
+function SearchBar({ value, onChange, placeholder, shown, total, testId, compact }: { value: string; onChange: (v: string) => void; placeholder: string; shown: number; total: number; testId: string; compact?: boolean }) {
+  return (
+    <div className={`sr-search ${compact ? 'compact' : ''}`} role="search">
+      <Icon name="search" size={13} />
+      <input className="input sm" type="search" value={value} onChange={(e) => onChange(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape' && value) { e.stopPropagation(); onChange(''); } }} placeholder={placeholder} aria-label={placeholder} data-testid={testId} />
+      {value.trim() && <span className="sidenote num" data-testid={`${testId}-count`}>{shown} of {total}</span>}
+      {value && <button className="iconbtn sm" onClick={() => onChange('')} aria-label="Clear search" title="Clear search" data-testid={`${testId}-clear`}><Icon name="close" size={12} /></button>}
+    </div>
+  );
 }

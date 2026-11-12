@@ -493,6 +493,28 @@ await step('m: optional Split view: issues beside updates; selecting highlights 
   await p.context().close();
 });
 
+await step('n: search in Open issues and Incident Updates: title, equipment and update wording; count; nothing-matches line; Escape and clear', async () => {
+  const p = await fresh(); await next(p, 5); await issues(p);
+  const ids = () => p.locator(T('issue-card')).evaluateAll((els) => els.map((e) => e.dataset.issue));
+  const all = await ids();
+  await p.fill(T('issue-search'), 'deluge'); await wait(p, 200);
+  assert(JSON.stringify(await ids()) === '["deluge"]' && /^1 of \d+$/.test(await p.textContent(T('issue-search-count'))), 'by title, with a count');
+  await p.fill(T('issue-search'), 'shrapnel'); await wait(p, 200);
+  assert(JSON.stringify(await ids()) === '["fire"]', 'by the wording of its updates');
+  await p.fill(T('issue-search'), 'zzz'); await wait(p, 200);
+  assert(await p.locator(T('issue-nomatch')).isVisible(), 'nothing matches, with a way to clear');
+  await p.locator(T('issue-search')).press('Escape'); await wait(p, 200);
+  assert(JSON.stringify(await ids()) === JSON.stringify(all), 'Escape clears');
+  await updates(p);
+  const n0 = await p.locator(`${T('feed-rows')} > li.sr-row`).count();
+  await p.fill(T('feed-search'), 'flare'); await wait(p, 200);
+  const n1 = await p.locator(`${T('feed-rows')} > li.sr-row`).count();
+  assert(n1 > 0 && n1 < n0 && (await p.textContent(T('feed-search-count'))) === `${n1} of ${n0}`, 'updates search narrows the feed, with a count');
+  await p.click(T('feed-search-clear')); await wait(p, 200);
+  assert(await p.locator(`${T('feed-rows')} > li.sr-row`).count() === n0, 'clear');
+  await p.context().close();
+});
+
 await browser.close();
 if (errors.length) { fail++; console.log('FAIL console errors:', [...new Set(errors)].slice(0, 5).join(' | ').slice(0, 800)); }
 console.log(`\n${pass} passed, ${fail} failed. Screenshots in ${OUT}`);

@@ -319,7 +319,7 @@ if (want('core')) {
   });
   await step('superseded recommendation: original kept, earlier approval unchanged and shown, the revised suggestion needs a decision', async () => {
     await page.click('[data-testid="alert-a4-2"]'); await page.waitForSelector('[data-testid="issue-panel"][data-issue="pressure"]');
-    assert(/ECC revised its (suggestion|recommendation)/.test(await page.textContent('[data-testid="needs-line"]')) && /Hold depressurization via FH-01/.test(await page.textContent('[data-testid="suggestion-text"]')), 'revised suggestion');
+    assert(/ECC revised its (suggestion|recommendation)/.test(await page.textContent('[data-testid="needs-revised"]')) && /Hold depressurization via FH-01/.test(await page.textContent('[data-testid="suggestion-text"]')), 'revised suggestion');
     assert((await page.locator('[data-testid="decision-earlier"]').count()) === 1 && /Accepted an earlier (suggestion|recommendation): Initiate emergency depressurization/.test(await page.textContent('[data-testid="decision-earlier"]')), 'earlier approval shown as earlier');
     assert(JSON.stringify((await store()).alertUser['a4-2'].decision) === JSON.stringify(a42Decision), 'decision unchanged');
     const rec = await record();
