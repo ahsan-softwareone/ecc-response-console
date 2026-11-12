@@ -4,7 +4,7 @@ import { useStore } from '../store';
 import { Icon } from '../ui/Icon';
 
 /** Calm starting point: nothing is being monitored and the application says so. */
-export function NoIncident() {
+export function NoIncident({ overview = false }: { overview?: boolean }) {
   const setDialog = useStore((s) => s.setDialog);
   const setNav = useStore((s) => s.setNav);
   const setKnowledgeView = useStore((s) => s.setKnowledgeView);
@@ -15,8 +15,9 @@ export function NoIncident() {
   return (
     <div className="noincident" data-testid="no-incident">
       <div className="ni-card">
+        {overview && <div className="label" data-testid="overview-empty">Incident Overview</div>}
         <h2>No active incident</h2>
-        <p className="sidenote">Nothing is being monitored in this workspace. Past records stay available in Knowledge.</p>
+        <p className="sidenote">{overview ? 'There is no incident to brief on. When one is started or resumed, its briefing appears here.' : 'Nothing is being monitored in this workspace.'} Past records stay available in Knowledge.</p>
         <div className="ni-actions">
           <button className="ni-action primary-action" disabled={!ready} onClick={() => setDialog({ type: 'start', mode: 'real' })} data-testid="start-incident"><Icon name="plus" size={16} /><span><b>Start incident</b><small>Record a real emergency. Simulated data in this prototype.</small></span></button>
           <button className="ni-action" disabled={!ready} onClick={() => setDialog({ type: 'start', mode: 'training' })} data-testid="start-training"><Icon name="play" size={16} /><span><b>Start training scenario</b><small>SG GSP drone interception, revealed progressively.</small></span></button>

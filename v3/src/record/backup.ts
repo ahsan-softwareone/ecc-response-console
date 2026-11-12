@@ -7,7 +7,7 @@ import { incidentJson } from './exports';
 import type { IncidentRecord, RecordKind } from './types';
 
 export const BACKUP_SCHEMA = 'ecc-backup/1';
-const KINDS: RecordKind[] = ['notification', 'equipment', 'measurement', 'observation', 'alert', 'finding', 'recommendation', 'decision', 'report', 'outcome', 'gap', 'agent', 'reference', 'knowledge', 'report-version', 'stabilization', 'closure', 'correction', 'lesson', 'acknowledgement', 'agent-control', 'config', 'lifecycle', 'resolution'];
+const KINDS: RecordKind[] = ['feedback', 'notice', 'severity', 'investigation', 'notification', 'equipment', 'measurement', 'observation', 'alert', 'finding', 'recommendation', 'decision', 'report', 'outcome', 'gap', 'agent', 'reference', 'knowledge', 'report-version', 'stabilization', 'closure', 'correction', 'lesson', 'acknowledgement', 'agent-control', 'config', 'lifecycle', 'resolution'];
 const STATUSES = ['active', 'resolved', 'stabilizing', 'closed', 'left-open'];
 export interface Attachment { doc: UploadedDoc; base64: string; pages: string[] }
 export interface ExportContents { attachments: string; included: string[]; byReference: string[]; missing: string[] }

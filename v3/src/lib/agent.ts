@@ -61,4 +61,4 @@ export function incidentTypeOf(r: IncidentRecord): string {
   if (/trip|pump|compressor|failure|outage/.test(t)) return 'Equipment';
   return 'Other';
 }
-export const INCIDENT_TYPES = ['Fire', 'Release', 'Security', 'Equipment', 'Other'];
+export const INCIDENT_TYPES = ['Fire', 'Smoke', 'Gas or liquid release', 'Explosion', 'Injury', 'Security', 'Equipment failure', 'Other', 'Not sure'];

@@ -4,6 +4,9 @@ import { currentRun, INCIDENT_TYPES, isOpen, LIFECYCLE_LABEL } from '../lib/agen
 import { useAgentDisplay } from '../lib/agentStatus';
 import { ATTENTION, useDerived } from '../lib/derive';
 import { clock, dateTime, now, pad2 } from '../lib/time';
+import { useStoryData } from '../pages/Story';
+import { sectionsFromBrief } from '../record/story';
+import { placePhrase } from '../overview/brief';
 import { exportIncident } from '../record/backup';
 import { downloadBlob } from '../record/exports';
 import { useStore, type Dialog, type Result } from '../store';
@@ -48,6 +51,18 @@ export function Dialogs() {
   return null;
 }
 
+const CHANNELS = ['Radio', 'Phone', 'In person', 'Alarm or system', 'Other'];
+const yes = (v: string) => v === '1';
+/** A title from what was entered, so it need not be typed twice: type and where, else the first words of the description. */
+function suggestTitle(type: string, desc: string, equipment: string[], place: string, approx: boolean, area: string): string {
+  const kind = type && type !== 'Not sure' ? type : '';
+  const nameOf = (id: string) => EQUIPMENT.find((x) => x.id === id)?.name ?? '';
+  const where = equipment.length ? `at ${equipment[0]} ${nameOf(equipment[0])}${equipment.length > 1 ? ` and ${equipment.length - 1} more` : ''}` : place ? `${approx ? 'near' : 'at'} ${placePhrase(place)}` : area ? `in the ${area} area` : '';
+  if (kind) return `${kind} ${where}`.trim();
+  const d = desc.trim().split(/[.!?\n]/)[0];
+  return d.length > 70 ? `${d.slice(0, 67).trimEnd()}…` : d;
+}
+
 function StartDialog({ dialog }: { dialog: Extract<Dialog, { type: 'start' }> }) {
   const setDialog = useStore((s) => s.setDialog);
   const startIncident = useStore((s) => s.startIncident);
@@ -56,33 +71,53 @@ function StartDialog({ dialog }: { dialog: Extract<Dialog, { type: 'start' }> })
   const conflict = !!current && isOpen(current);
   const p = dialog.prefill;
   const training = dialog.mode === 'training';
-  const [site, setSite] = useDraft('start.site', p?.site ?? SITES[0]);
-  const [title, setTitle] = useDraft('start.title', p?.title ?? '');
-  const [note, setNote] = useDraft('start.note', p?.notification ?? '');
-  const [occurred, setOccurred] = useDraft('start.occurred', toLocal(now()));
-  const [eq, setEq] = useDraft('start.eq', (p?.equipment ?? []).join(','));
-  const [location, setLocation] = useDraft('start.location', p?.location ?? '');
   const [type, setType] = useDraft('start.type', p?.incidentType ?? '');
+  const [desc, setDesc] = useDraft('start.note', p?.notification ?? '');
+  const [site, setSite] = useDraft('start.site', p?.site ?? SITES[0]);
+  const [area, setArea] = useDraft('start.area', '');
+  const [place, setPlace] = useDraft('start.location', p?.location ?? '');
+  const [approx, setApprox] = useDraft('start.approx', '');
+  const [eq, setEq] = useDraft('start.eq', (p?.equipment ?? []).join(','));
+  const [eqUnknown, setEqUnknown] = useDraft('start.equnknown', '');
+  const [search, setSearch] = useState('');
+  const [when, setWhen] = useDraft('start.when', 'now');
+  const [occurred, setOccurred] = useDraft('start.occurred', toLocal(now()));
+  const [timeApprox, setTimeApprox] = useDraft('start.timeapprox', '');
+  const [by, setBy] = useDraft('start.by', '');
+  const [title, setTitle] = useDraft('start.title', p?.title ?? '');
+  const [titleEdited, setTitleEdited] = useDraft('start.titleedited', p?.title ? '1' : '');
+  const [channel, setChannel] = useDraft('start.channel', '');
+  const [notes, setNotes] = useDraft('start.notes', '');
   const [aside, setAside] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const equipment = eq ? eq.split(',').filter(Boolean) : [];
-  const siteEquipment = EQUIPMENT;
-  const canStart = (training || (title.trim() && note.trim())) && (!conflict || aside) && !busy;
+  // The equipment list is the site's; SG GSP is the only site with one loaded in this prototype.
+  const siteEquipment = site === 'SG GSP' ? EQUIPMENT : [];
+  const areas = [...new Set(siteEquipment.map((e) => e.area))];
+  const q = search.trim().toLowerCase();
+  const listed = siteEquipment.filter((e) => !q || `${e.id} ${e.name} ${e.area} ${e.kind}`.toLowerCase().includes(q)).sort((a, b) => Number(b.area === area) - Number(a.area === area));
+  const auto = suggestTitle(type, desc, equipment, place, yes(approx), area);
+  const shownTitle = yes(titleEdited) ? title : auto;
+  const toggleEq = (id: string) => { setEq((equipment.includes(id) ? equipment.filter((x) => x !== id) : [...equipment, id]).join(',')); setEqUnknown(''); };
+  const canStart = (training || (desc.trim() && shownTitle.trim())) && (!conflict || aside) && !busy;
   const submit = async () => {
     setBusy(true); setErr(null);
-    const t = new Date(occurred).getTime();
+    const t = when === 'now' ? undefined : new Date(occurred).getTime();
+    const where = [place.trim() ? `${place.trim()}${yes(approx) ? ' (approximate)' : ''}` : '', area ? `${area} area` : ''].filter(Boolean).join(', ');
+    const via = by.trim() ? `${by.trim()}${channel ? ` by ${channel.toLowerCase()}` : ''}` : channel || 'Entered by the Shift Manager';
     const res = await startIncident(training
       ? { mode: 'training', site: EMERGENCY_META.facility, title: EMERGENCY_META.title, notification: 'Drone intercepted at the north perimeter; debris zone includes the propane recovery area.', via: EMERGENCY_META.reportedBy, equipment: [], incidentType: 'Security' }
-      : { mode: 'real', site, title: title.trim(), notification: note.trim(), via: p?.via ?? 'Entered by the Shift Manager', occurredAt: Number.isNaN(t) ? undefined : t, equipment, location: location.trim() || undefined, incidentType: type || undefined, basedOn: p?.basedOn }, { setAside: aside });
+      : { mode: 'real', site, title: shownTitle.trim(), notification: desc.trim() + (notes.trim() ? `\nNotes: ${notes.trim()}` : ''), via, occurredAt: t != null && !Number.isNaN(t) ? t : undefined, equipment, location: where || undefined, incidentType: type || 'Not sure', basedOn: p?.basedOn,
+        intake: { area: area || undefined, place: place.trim() || undefined, placeApprox: yes(approx) || undefined, equipmentUnknown: !equipment.length || undefined, occurredApprox: (when !== 'now' && yes(timeApprox)) || undefined, reportedBy: by.trim() || undefined, channel: channel || undefined, notes: notes.trim() || undefined } }, { setAside: aside });
     setBusy(false);
     if (res.ok) clearDrafts('start.'); else setErr(`The record was not saved, so nothing has started: ${res.error} Your entries are kept; try again.`);
   };
   return (
-    <Modal title={training ? 'Start training scenario' : 'Start incident'} onClose={() => setDialog(null)} testId="start-dialog" footer={
-      <><span className="sidenote grow">The record is saved first. {training ? 'Developments then unfold through the facilitator controls.' : 'Nothing is scripted for a real incident.'}</span>
+    <Modal wide={!training} title={training ? 'Start training scenario' : 'Start incident'} onClose={() => setDialog(null)} testId="start-dialog" footer={
+      <><span className="sidenote grow">{training ? 'The record is saved first. Developments then unfold through the facilitator controls.' : 'Unknown equipment or an approximate location is fine. Say what you know; it can be updated later.'}</span>
         <button className="btn sm" onClick={() => setDialog(null)} data-testid="start-cancel">{conflict ? 'Keep current incident' : 'Cancel'}</button>
-        <button className="btn sm primary" disabled={!canStart} onClick={() => void submit()} data-testid="start-submit">{conflict ? 'Set aside and start' : training ? 'Start training' : 'Create and save'}</button></>
+        <button className="btn sm primary" disabled={!canStart} onClick={() => void submit()} data-testid="start-submit">{conflict ? 'Set aside and start' : training ? 'Start training' : 'Start incident'}</button></>
     }>
       {conflict && (
         <div className="choice" data-testid="start-conflict">
@@ -94,19 +129,71 @@ function StartDialog({ dialog }: { dialog: Extract<Dialog, { type: 'start' }> })
       {training ? (
         <dl className="kv"><dt>Scenario</dt><dd>{EMERGENCY_META.title}</dd><dt>Site</dt><dd>{EMERGENCY_META.facility}</dd><dt>Data</dt><dd>Illustrative. Developments are revealed step by step.</dd></dl>
       ) : (
-        <div className="form-grid">
-          {p?.basedOn && <div className="choice full" data-testid="based-on-note"><b>Reference: {p.basedOn.id}</b><p className="sidenote">This creates a new incident with its own identity. No decisions, measurements or completed actions are copied. Historical actions are precedent, not applicable protocol.</p></div>}
-          <Field label="Site / facility"><select className="select" value={site} onChange={(e) => setSite(e.target.value)} data-testid="start-site">{SITES.map((s) => <option key={s}>{s}</option>)}</select></Field>
-          <Field label="Occurred at" hint="Defaults to now; change it if the event began earlier."><input className="input" type="datetime-local" value={occurred} max={toLocal(now())} onChange={(e) => setOccurred(e.target.value)} data-testid="start-occurred" /></Field>
-          <div className="full"><Field label="Short title"><input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What is happening, in a few words" data-testid="start-title" /></Field></div>
-          <div className="full"><Field label="Initial notification"><textarea className="textarea" value={note} onChange={(e) => setNote(e.target.value)} placeholder="What was reported, and by whom" data-testid="start-notification" /></Field></div>
-          <Field label="Equipment, if known">
-            <div className="checks" data-testid="start-equipment">{siteEquipment.map((e) => <label className="check" key={e.id}><input type="checkbox" checked={equipment.includes(e.id)} onChange={() => setEq((equipment.includes(e.id) ? equipment.filter((x) => x !== e.id) : [...equipment, e.id]).join(','))} data-testid={`start-eq-${e.id}`} /> {e.id}</label>)}</div>
-          </Field>
-          <div>
-            <Field label="Location, if known"><input className="input" value={location} onChange={(e) => setLocation(e.target.value)} data-testid="start-location" /></Field>
-            <Field label="Type, if known"><select className="select" value={type} onChange={(e) => setType(e.target.value)} data-testid="start-type"><option value="">Not stated</option>{INCIDENT_TYPES.map((x) => <option key={x}>{x}</option>)}</select></Field>
+        <div className="intake" data-testid="start-form">
+          {p?.basedOn && <div className="choice" data-testid="based-on-note"><b>Reference: {p.basedOn.id}</b><p className="sidenote">This creates a new incident with its own identity. No decisions, measurements or completed actions are copied. Historical actions are precedent, not applicable protocol.</p></div>}
+          <section className="in-q" aria-labelledby="in-q1">
+            <h3 id="in-q1">What happened?</h3>
+            <div className="in-what">
+              <label className="field"><span className="label">Type</span><select className="select" value={type} onChange={(e) => setType(e.target.value)} data-testid="start-type"><option value="">Choose…</option>{INCIDENT_TYPES.map((x) => <option key={x}>{x}</option>)}</select></label>
+              <label className="field grow"><span className="label">What was observed or reported</span><textarea className="textarea" rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="For example: smoke seen from the north side of the propane area, no flames visible" data-testid="start-notification" /></label>
+            </div>
+          </section>
+          <div className="in-pair">
+            <section className="in-q" aria-labelledby="in-q2">
+              <h3 id="in-q2">Where did it happen?</h3>
+              <label className="field"><span className="label">Facility</span><select className="select" value={site} onChange={(e) => { setSite(e.target.value); setArea(''); }} data-testid="start-site">{SITES.map((x) => <option key={x}>{x}</option>)}</select></label>
+              <label className="field"><span className="label">Area</span><select className="select" value={area} onChange={(e) => setArea(e.target.value)} data-testid="start-area"><option value="">Not sure</option>{areas.map((x) => <option key={x} value={x}>{x}</option>)}</select></label>
+              <label className="field"><span className="label">Place</span><input className="input" value={place} onChange={(e) => setPlace(e.target.value)} placeholder="Exact place, or roughly where (e.g. north side of the propane area)" data-testid="start-location" /></label>
+              <label className="check"><input type="checkbox" checked={yes(approx)} onChange={(e) => setApprox(e.target.checked ? '1' : '')} data-testid="start-approx" /> This is approximate</label>
+            </section>
+            <section className="in-q" aria-labelledby="in-q3">
+              <h3 id="in-q3">Which equipment may be involved?</h3>
+              {equipment.length > 0 && <div className="in-chips" data-testid="start-eq-selected">{equipment.map((id) => <button key={id} className="chip in-chip" onClick={() => toggleEq(id)} title="Remove" data-testid={`start-eq-chip-${id}`}>{id} <span className="sidenote">{EQUIPMENT.find((x) => x.id === id)?.name}</span> <Icon name="close" size={11} /></button>)}</div>}
+              {siteEquipment.length ? <>
+                <input className="input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by tag or name, e.g. D-0029 or accumulator" aria-label="Search equipment" data-testid="start-eq-search" />
+                <div className="in-eqlist" role="group" aria-label="Equipment" data-testid="start-equipment">
+                  {listed.map((e) => (
+                    <label key={e.id} className={`in-eq ${equipment.includes(e.id) ? 'on' : ''}`}>
+                      <input type="checkbox" checked={equipment.includes(e.id)} onChange={() => toggleEq(e.id)} data-testid={`start-eq-${e.id}`} />
+                      <b>{e.id}</b><span>{e.name}</span><span className="sidenote">{e.area}</span>
+                    </label>
+                  ))}
+                  {listed.length === 0 && <p className="sidenote" style={{ margin: 6 }}>Nothing matches “{search}”.</p>}
+                </div>
+              </> : <p className="sidenote" data-testid="start-eq-none">No equipment list is loaded for {site}. Describe the equipment in the place or the description.</p>}
+              <label className="check"><input type="checkbox" checked={yes(eqUnknown) || false} onChange={(e) => { setEqUnknown(e.target.checked ? '1' : ''); if (e.target.checked) setEq(''); }} data-testid="start-eq-unknown" /> Not known yet</label>
+            </section>
           </div>
+          <div className="in-pair in-small">
+            <section className="in-q" aria-labelledby="in-q4">
+              <h3 id="in-q4">When did it happen?</h3>
+              {when === 'now' ? (
+                <p className="in-when"><span data-testid="start-when-now">Now, {clock(now())}</span><button className="link" onClick={() => { setWhen('earlier'); setOccurred(toLocal(now())); }} data-testid="start-when-edit">Earlier or approximate</button></p>
+              ) : (
+                <div className="in-when">
+                  <input className="input" type="datetime-local" value={occurred} max={toLocal(now())} onChange={(e) => setOccurred(e.target.value)} data-testid="start-occurred" />
+                  <label className="check"><input type="checkbox" checked={yes(timeApprox)} onChange={(e) => setTimeApprox(e.target.checked ? '1' : '')} data-testid="start-time-approx" /> Approximate</label>
+                  <button className="link" onClick={() => setWhen('now')} data-testid="start-when-now-reset">Use now</button>
+                </div>
+              )}
+            </section>
+            <section className="in-q" aria-labelledby="in-q5">
+              <h3 id="in-q5">Reported by <span className="in-opt">optional</span></h3>
+              <input className="input" value={by} onChange={(e) => setBy(e.target.value)} placeholder="Who reported it, e.g. Field operator, north gate" aria-labelledby="in-q5" data-testid="start-by" />
+            </section>
+          </div>
+          <section className="in-q in-title" aria-labelledby="in-q6">
+            <h3 id="in-q6">Incident title</h3>
+            <input className="input" value={shownTitle} onChange={(e) => { setTitle(e.target.value); setTitleEdited('1'); }} placeholder="Suggested from what you enter above" aria-labelledby="in-q6" data-testid="start-title" />
+            <span className="sidenote">{yes(titleEdited) ? <>Edited. <button className="link" onClick={() => { setTitleEdited(''); setTitle(''); }} data-testid="start-title-reset">Use the suggestion: {auto || '—'}</button></> : 'Suggested from what you entered. Change it if you like.'}</span>
+          </section>
+          <details className="in-more" data-testid="start-more">
+            <summary>Add more details <span className="sidenote">how it was reported, notes</span></summary>
+            <div className="in-pair in-small">
+              <label className="field"><span className="label">How it was reported</span><select className="select" value={channel} onChange={(e) => setChannel(e.target.value)} data-testid="start-channel"><option value="">Not stated</option>{CHANNELS.map((x) => <option key={x}>{x}</option>)}</select></label>
+              <label className="field"><span className="label">Notes</span><input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Anything else worth keeping with the first report" data-testid="start-notes" /></label>
+            </div>
+          </details>
         </div>
       )}
       <ErrorBox text={err} />
@@ -178,14 +265,15 @@ function CloseDialog() {
   const [outstanding, setOutstanding] = useDraft('close.outstanding', initialOutstanding);
   const [reviewed, setReviewed] = useState(false);
   const last = record.reportVersions[record.reportVersions.length - 1];
-  const [snapshot, setSnapshot] = useState(!last || last.status !== 'approved');
+  const [snapshot, setSnapshot] = useState(true);
+  const { brief } = useStoryData(record);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const run = currentRun(record);
-  const sitrepState = last ? `SITREP ${last.number} is ${last.status === 'approved' ? 'approved' : last.status === 'review' ? 'in review, not approved' : 'a draft, not approved'}` : 'No SITREP exists yet';
+  const sitrepState = last ? `The latest Sit. Rep is as of ${clock(last.asOf)}` : 'No Sit. Rep exists yet';
   const submit = async () => {
     setBusy(true); setErr(null);
-    const res = await closeIncident(rationale.trim(), lines(outstanding), { snapshot });
+    const res = await closeIncident(rationale.trim(), lines(outstanding), { snapshot, generated: sectionsFromBrief(brief) });
     setBusy(false);
     if (res.ok) clearDrafts('close.'); else setErr(`Not closed. ${res.error} The incident stays open and your working record is intact. Retry, or export it now.`);
   };
@@ -207,8 +295,8 @@ function CloseDialog() {
         <div className="full"><Field label="Closure rationale"><textarea className="textarea" value={rationale} onChange={(e) => setRationale(e.target.value)} data-testid="close-rationale" /></Field></div>
         <div>
           <span className="label">Final timeline and SITREP</span>
-          <p data-testid="close-sitrep-state">{sitrepState}. The state is preserved as it is; closing approves nothing.</p>
-          <label className="check"><input type="checkbox" checked={snapshot} onChange={(e) => setSnapshot(e.target.checked)} data-testid="close-snapshot" /> Add a final SITREP snapshot from the record (saved as a draft, not approved)</label>
+          <p data-testid="close-sitrep-state">{sitrepState}. Existing reports are kept as they are.</p>
+          <label className="check"><input type="checkbox" checked={snapshot} onChange={(e) => setSnapshot(e.target.checked)} data-testid="close-snapshot" /> Generate a final Sit. Rep from the record</label>
         </div>
         <div>
           <span className="label">Effect on the agent</span>
@@ -238,7 +326,7 @@ function ClosedDialog({ id }: { id: string }) {
       <p>{id} is saved in this browser and available in Knowledge → Incidents. The same identity is kept; nothing was duplicated or deleted.</p>
       <dl className="kv" style={{ marginTop: 10 }}>
         <dt>Closed</dt><dd>{record.closure ? `${dateTime(record.closure.t)} · ${record.closure.by}` : ''}</dd>
-        <dt>SITREP</dt><dd data-testid="closed-sitrep">{record.closure?.sitrep}</dd>
+        <dt>Sit. Rep</dt><dd data-testid="closed-sitrep">{record.closure?.sitrep}</dd>
         <dt>Outstanding</dt><dd>{record.closure?.outstanding.length ?? 0} item{record.closure?.outstanding.length === 1 ? '' : 's'} carried in the record</dd>
       </dl>
       {note && <p className="sidenote" style={{ marginTop: 8 }} data-testid="export-contents">{note}</p>}

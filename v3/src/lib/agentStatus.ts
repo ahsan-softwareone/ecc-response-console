@@ -19,6 +19,7 @@ export function useAgentDisplay(): AgentDisplay {
   const saveFailed = useStore((s) => s.save.state === 'failed');
   const simRetrieval = useStore((s) => s.simulateRetrievalFailure);
   const now = useIncidentNow(2000);
+  const investigating = useStore((s) => s.investigationProgress);
   return useMemo(() => {
     const state = agentStateOf(record);
     const run = currentRun(record);
@@ -38,11 +39,13 @@ export function useAgentDisplay(): AgentDisplay {
       ...d.held.alerts, ...d.held.findings,
       ...d.observations.filter((o) => o.kind !== 'agent-finding' && o.kind !== 'route-assessment' && o.time >= pausedFrom).map((o) => `Field: ${o.text}`),
       ...d.fieldReports.filter((r) => r.time >= pausedFrom).map((r) => `Field report: ${r.text}`),
+      ...(record?.events ?? []).filter((e) => e.meta?.userSubmitted && e.t >= pausedFrom).map((e) => `Reported: ${e.title}`),
     ];
     const attention = state === 'error' || (saveFailed && (state === 'running' || state === 'paused'));
-    const busy = state === 'running' && !attention && !!d.processing;
-    const activity = busy ? ACTIVITY[d.processing!.kind] ?? d.processing!.title : state === 'running' && !attention ? 'Monitoring · awaiting updates' : null;
+    const asking = state === 'running' && !attention && !!investigating;
+    const busy = asking || (state === 'running' && !attention && !!d.processing);
+    const activity = asking ? investigating!.label : busy ? ACTIVITY[d.processing!.kind] ?? d.processing!.title : state === 'running' && !attention ? 'Monitoring · awaiting updates' : null;
     const label = state === 'none' ? 'Agent inactive' : attention ? 'Agent needs attention' : state === 'running' ? 'Agent live' : state === 'paused' ? 'Agent paused' : state === 'stopped' ? 'Agent stopped' : 'Agent not started';
     return { state, attention, label, activity, busy, concerns, received, heldCount, lastCheckAt: d.lastCheckAt, lastCheckTitle: d.lastCheckTitle, inFlight: d.processing ? [d.processing.title] : [], suspendedSince };
-  }, [d, record, dashboard, startedAt, revealedAt, now, saveFailed, simRetrieval]);
+  }, [d, record, dashboard, startedAt, revealedAt, now, saveFailed, simRetrieval, investigating]);
 }

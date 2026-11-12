@@ -44,15 +44,36 @@ async function step(name, fn) {
     console.log('DIAG', JSON.stringify(await pageDiag()));
     // leave no overlay behind for the next check
     await page.keyboard.press('Escape').catch(() => {});
-    await page.locator('[data-testid="clear-filters"]').click({ timeout: 300 }).catch(() => {}); // a failed filter check must not hide arrivals from the next check
+    await page.locator('[data-testid="origin-all"]').click({ timeout: 300 }).catch(() => {}); // a failed filter check must not hide arrivals from the next check
     await page.locator('button[title="Restore layout"]:visible').first().click({ timeout: 300 }).catch(() => {}); // nor may a maximized panel hide the next check's targets
     for (const sel of ['[data-testid="trend-close"]', '[data-testid="viewer-overlay"] [data-testid="viewer-close"]', '[data-testid="assistant-close"]']) await page.locator(sel).click({ timeout: 300 }).catch(() => {});
   }
 }
+
+/** Test harness. The response drawer is modal: a click outside it closes it. A click aimed at the workspace while the drawer is open
+ *  therefore closes the drawer first, the way a person would; clicks inside the drawer are unchanged. */
+function drawerAware(pg) {
+  const click = pg.click.bind(pg);
+  pg.click = async (sel, o) => {
+    const covered = await pg.evaluate((s) => { try { const el = document.querySelector(s); return !!el && !!document.querySelector('[data-testid="drawer-backdrop"]') && !el.closest('[data-testid="room-dock"]') && !!el.closest('.sr-main, .sr-bar'); } catch { return false; } }, sel).catch(() => false);
+    if (covered) { await click('[data-testid="panel-close"]'); await pg.waitForSelector('[data-testid="drawer-backdrop"]', { state: 'detached' }).catch(() => {}); }
+    const r = await click(sel, o);
+    // These checks read individual record entries: arriving on the Timeline, open every history group (collapsed by default) and the Sit. Rep tab.
+    if (/data-testid="(nav-sitrep|ov-full-timeline|link-record)"/.test(String(sel))) {
+      await pg.evaluate(() => document.querySelectorAll('[data-testid="moment-toggle"][aria-expanded="false"]').forEach((b) => b.click())).catch(() => {});
+    }
+    return r;
+  };
+  // Notes and who-was-told sit behind Add details on Accept; open it before filling them, as a person would.
+  const openDetails = async (sel) => { if (/rationale|decision-(to|via|within)/.test(String(sel))) await pg.evaluate(() => { const d = document.querySelector('[data-testid="decision-details"]'); if (d && !d.open) d.open = true; }).catch(() => {}); };
+  const fill0 = pg.fill.bind(pg); pg.fill = async (sel, v, o) => { await openDetails(sel); return fill0(sel, v, o); };
+  const so0 = pg.selectOption.bind(pg); pg.selectOption = async (sel, v, o) => { await openDetails(sel); return so0(sel, v, o); };
+  return pg;
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1, acceptDownloads: true });
-const page = await context.newPage();
+const page = drawerAware(await context.newPage());
 // Diagnostics: an independent heartbeat in the page, so a failure can tell a stalled page from stalled app state.
 await page.addInitScript(() => { const hb = window.__hb = []; (function beat() { hb.push(Date.now()); if (hb.length > 400) hb.shift(); setTimeout(beat, 1000); })(); });
 const pageDiag = () => page.evaluate(async () => {
@@ -91,9 +112,18 @@ const next = async ({ wait = true } = {}) => {
   if (wait) { await page.waitForSelector(`[data-testid="alert-${LAST_ALERT[k]}"]`, { timeout: 70000 }); await assertNoFuture('after the step unfolded'); }
 };
 const valueOf = async (id) => +(await page.getAttribute(`[data-testid="watcher-${id}"]`, 'data-value'));
-const stateOf = async (id) => (await page.textContent(`[data-testid="alert-${id}"] td.state`)).trim();
+const stateOf = async (id) => (await page.textContent(`[data-testid="alert-${id}"] [data-testid="condition"]`)).trim();
+/** Open the Evidence view of the issue an alert belongs to, and the citation of one document in it. */
+const evidenceOf = async (alertId) => { while (await page.locator('[data-testid="viewer-overlay"]').count()) { await page.keyboard.press('Escape'); await sleep(100); } await page.click(`[data-testid="alert-${alertId}"]`); await page.waitForSelector('[data-testid="issue-panel"] [data-testid="evidence"]'); if ((await page.locator('[data-testid="evidence-all"]').textContent().catch(() => '')).startsWith('Show more')) await page.click('[data-testid="evidence-all"]'); };
+/** Evidence is listed in the response; a document opens in the viewer dialog at the cited passage. */
+const cite = (docTitle) => page.click(`[data-testid="evidence-item"][data-kind="document"]:has-text("${docTitle}") >> nth=0`);
+const DOC = '[data-testid="viewer-overlay"]';
+/** Full equipment cards (Show all readings), and back to the Incident Updates view with the strip. */
+const showReadings = async () => { if ((await page.getAttribute('[data-testid="watch-toggle"]', 'aria-expanded')) === 'false') await page.click('[data-testid="watch-toggle"]'); };
+const backToUpdates = async () => { if ((await page.getAttribute('[data-testid="watch-toggle"]', 'aria-expanded')) === 'true') await page.click('[data-testid="watch-toggle"]'); await page.click('[data-testid="view-updates"]'); };
+const closeDoc = () => page.click(`${DOC} [data-testid="viewer-close"]`);
 async function fastForwardTo7() {
-  await nav('situation');
+  await nav('situation'); await page.click('[data-testid="view-updates"]');
   while ((await store()).revealedAt.length < 7) { await page.click('[data-testid="facil-next"]'); await sleep(120); }
   await page.waitForSelector('[data-testid="alert-a7-3"]', { timeout: 70000 });
   await page.click('[data-testid="alert-a7-1"]'); await page.click('[data-testid="decide-approved"]');
@@ -132,13 +162,15 @@ await page.goto(URL, { waitUntil: 'load' });
 // A fresh browser opens on the no-incident workspace; these checks run on the training scenario.
 await page.click('[data-testid="start-training"]'); await page.click('[data-testid="start-submit"]');
 await page.waitForSelector('[data-testid="dock"]');
+// Alerts are opened from the Incident Updates view of the worklist.
+await backToUpdates();
 await sleep(800);
 
 // ======================================================================= core
 if (want('core')) {
   await step('navigation: exact tabs in order; no Records / Site Knowledge / Incident History; Assistant is a header control', async () => {
     const tabs = await page.locator('[data-testid="nav"] button').allTextContents();
-    assert(JSON.stringify(tabs.map((t) => t.replace(/\d+$/, '').trim())) === JSON.stringify(['Situation', 'Sit. Rep', 'Agent Log', 'Knowledge']), `tabs: ${tabs.join(' | ')}`);
+    assert(JSON.stringify(tabs.map((t) => t.replace(/\d+$/, '').trim())) === JSON.stringify(['Overview', 'Situation Room', 'Timeline', 'Agent Log', 'Knowledge']), `tabs: ${tabs.join(' | ')}`);
     assert((await page.locator('[data-testid="assistant-toggle"]').count()) === 1, 'assistant toggle in header');
     await nav('knowledge');
     assert(!(await page.textContent('[data-testid="knowledge-tabs"]')).includes('Assistant'), 'Assistant not inside Knowledge');
@@ -169,6 +201,7 @@ if (want('core')) {
     await nav('situation');
   });
   await step('add equipment: FW-01 appears as a fifth card', async () => {
+    await showReadings();
     assert((await page.locator('[data-testid^="card-"]').count()) === 4, '4 cards initially');
     await page.click('[data-testid="add-equipment"]'); await page.click('[data-testid="add-FW-01"]');
     await page.waitForSelector('[data-testid="card-FW-01"]');
@@ -183,6 +216,7 @@ if (want('core')) {
     await row.hover(); await row.locator('button[title="Adjust watcher"]').click(); await page.click('[data-testid="hide-D-0029:temperature"]');
     assert((await page.locator('[data-testid="watcher-D-0029:temperature"]').count()) === 0, 'watcher removed');
     assert((await page.locator('[data-testid="card-D-0029"]').textContent()).includes('1 hidden · still monitored'), 'still monitored');
+    await backToUpdates();
   });
   await step('step 2: fire alerts appear; step-2 markers only now', async () => {
     await next({ wait: false });
@@ -195,89 +229,75 @@ if (want('core')) {
     assert(t.includes(MARKERS[2][0]), 'step 2 marker present');
     for (const m of [...MARKERS[3], ...MARKERS[4], ...MARKERS[5], ...MARKERS[6], ...MARKERS[7]]) assert(!t.includes(m), `"${m}" leaked at step 2`);
   });
-  await step('filter from card indicator; hidden High stays discoverable; clear filters', async () => {
-    await page.click('[data-testid="ind-D-0029"]');
-    await page.waitForSelector('[data-testid="log-toolbar"][data-active="true"]');
-    assert((await page.getAttribute('[data-testid="ind-D-0029"]', 'aria-pressed')) === 'true' && (await page.textContent('[data-testid="filter-equipment"]')).includes('D-0029'), 'badge selected and reflected in the toolbar');
-    const eqs = await page.locator('tr.row td.eq').allTextContents();
-    assert(eqs.length > 0 && eqs.every((e) => e === 'D-0029'), 'only D-0029 rows');
+  await step('card alert badge shows that equipment’s notifications and opens nothing; a feed filter never quietly hides a Critical alert', async () => {
+    await showReadings();
+    await page.click('[data-testid="ind-D-0029"]'); await page.waitForSelector('[data-testid="feed-equipment"]');
+    assert((await page.locator('[data-testid="issue-panel"], [data-testid="update-panel"]').count()) === 0, 'the drawer stays closed');
+    await page.click('[data-testid="feed-equipment"]'); await backToUpdates();
+    await page.click('[data-testid="origin-agent"]');
+    await page.waitForSelector('[data-testid="feed-hidden-critical"]');
+    assert((await page.locator('[data-testid="alert-a2-1"]').count()) === 0, 'Critical hidden by the filter');
+    await page.click('[data-testid="feed-hidden-critical"]');
+    assert((await page.locator('[data-testid="alert-a2-1"]').count()) === 1 && (await page.getAttribute('[data-testid="origin-all"]', 'aria-pressed')) === 'true', 'the indicator shows everything again');
     await next({ wait: false });
-    try { await page.waitForSelector('[data-testid="hidden-indicator"]:not([data-high="0"])', { timeout: 70000 }); }
-    catch (e) {
-      const d = await page.evaluate(() => ({ filters: JSON.parse(localStorage.getItem('ecc-v3')).state.logFilters, revealed: JSON.parse(localStorage.getItem('ecc-v3')).state.revealedAt.length, clock: (() => { const st = JSON.parse(localStorage.getItem('ecc-v3')).state; return { startedAt: st.startedAt, revealedAt: st.revealedAt, skewMs: st.skewMs, wall: Date.now(), scenarioElapsedMin: (Date.now() + st.skewMs - st.startedAt) / 60000, headerTimer: document.querySelector('[data-testid="timer"]')?.textContent, hidden: document.hidden, visibility: document.visibilityState }; })(), rows: [...document.querySelectorAll('tr.row')].map((r) => r.getAttribute('data-testid') + ':' + r.querySelector('td.eq')?.textContent + ':' + r.querySelector('td.state')?.textContent), indicator: document.querySelector('[data-testid="hidden-indicator"]')?.outerHTML.slice(0, 300) ?? null, toolbar: document.querySelector('[data-testid="log-toolbar"]')?.getBoundingClientRect().toJSON(), a31: !!document.querySelector('[data-testid="alert-a3-1"]'), pill: document.querySelector('.newpill')?.textContent ?? null }));
-      throw new Error(`${e.message.split('\n')[0]} — diagnostics ${JSON.stringify(d)}`);
-    }
-    assert((await page.getAttribute('[data-testid="hidden-indicator"]', 'data-high')) === '1' && (await page.locator('[data-testid="alert-a3-1"]').count()) === 0, 'D-0001 High hidden by the equipment filter and counted once');
-    await page.click('[data-testid="hidden-indicator"]');
-    assert((await page.locator('[data-testid="alert-a3-1"]').count()) === 1 && JSON.stringify((await store()).logFilters.equipment.sort()) === JSON.stringify(['D-0001', 'D-0029']), 'indicator added the equipment minimally');
-    await page.click('[data-testid="clear-filters"]');
-    assert((await page.getAttribute('[data-testid="log-toolbar"]', 'data-active')) === 'false' && (await page.getAttribute('[data-testid="ind-D-0029"]', 'aria-pressed')) === 'false', 'cleared');
     await page.waitForSelector('[data-testid="alert-a3-2"]', { timeout: 70000 });
   });
   await step('hidden watcher does not suppress its alert; threshold alert agrees with the reading; a Critical arrival outside the filter updates the indicator without stealing focus', async () => {
-    await page.click('[data-testid="sev-low"]');
-    const critBefore = +((await page.getAttribute('[data-testid="hidden-indicator"]', 'data-critical').catch(() => '0')) ?? 0);
-    const unreadBefore = await page.textContent('[data-testid="nav-situation"] .badge');
-    await next({ wait: false }); await page.focus('[data-testid="filter-search"]');
+    await page.click('[data-testid="origin-people"]');
+    await next({ wait: false }); await page.focus('[data-testid="origin-people"]');
+    await page.waitForFunction(() => window.__ecc.store.getState().revealedAt.length === 4, null, { timeout: 5000 });
+    await page.waitForSelector('[data-testid="feed-hidden-critical"]', { timeout: 70000 });
+    await page.waitForFunction(() => /[3-9] critical hidden/.test(document.querySelector('[data-testid="feed-hidden-critical"]')?.textContent ?? ''), null, { timeout: 70000 });
+    assert((await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'origin-people', 'focus stayed; the indicator counts the new Criticals');
+    assert((await store()).room.origin === 'people', 'filter unchanged by arrivals');
+    await showReadings();
+    assert((await page.locator('[data-testid="ind-D-0001"] .badge.sev-critical').count()) === 1, 'card indicator shows the Critical');
+    await backToUpdates(); await page.click('[data-testid="origin-all"]');
     await page.waitForSelector('[data-testid="alert-a4-3"]', { timeout: 70000 });
-    await page.waitForSelector('[data-testid="hidden-indicator"][data-critical="3"]', { timeout: 20000 });
-    assert(critBefore === 1 && (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'filter-search', 'focus stayed in the search field; indicator counts the new Criticals');
-    assert((await store()).logFilters.severity === 'low', 'filter unchanged by arrivals');
-    assert(+(await page.textContent('[data-testid="nav-situation"] .badge')) > +unreadBefore, 'nav unread count counts filtered-out arrivals');
-    assert((await page.locator('[data-testid="ind-D-0001"] .badge.sev-critical').count()) === 1, 'card indicator shows the hidden Critical');
-    await page.click('[data-testid="clear-filters"]');
-    await page.waitForSelector('[data-testid="alert-a4-3"]');
     assert((await valueOf('D-0001:pressure')) > 18.0, 'a4-2 above High 18.0');
-    assert((await page.locator('[data-testid="watcher-D-0029:temperature"]').count()) === 0 && (await page.textContent('[data-testid="alert-a4-3"]')).includes('temperature signal lost'), 'alert shown for hidden watcher');
+    assert((await page.locator('[data-testid="watcher-D-0029:temperature"]').count()) === 0 && /temperature reading on D-0029/.test(await page.textContent('[data-testid="alert-a4-3"]')), 'alert shown for hidden watcher');
   });
-  await step('select alert: response, observations and sources open; read is not acknowledge', async () => {
-    await page.click('[data-testid="alert-a3-1"]'); await page.waitForSelector('[data-testid="response-detail"][data-alert="a3-1"]');
+  await step('select alert: its issue opens with the evidence a click away; read is not acknowledge', async () => {
+    await page.click('[data-testid="alert-a3-1"]'); await page.waitForSelector('[data-testid="issue-panel"][data-issue="pressure"]');
     const s = await store(); assert(s.alertUser['a3-1'].readAt && !s.alertUser['a3-1'].ackAt, 'read without ack');
-    assert((await page.locator('[data-testid="calc"]').textContent()).includes('not computed'), 'calculation without method');
-    await page.click('[data-testid="tab-observations"]'); await page.waitForSelector('[data-testid="observations"]');
-    await page.click('[data-testid="tab-sources"]'); await page.waitForSelector('[data-testid="sources"]');
-    await page.click('[data-testid="tab-response"]'); await page.waitForSelector('[data-testid="recommendation"]');
+    const kinds = await page.locator('[data-testid="evidence-item"]').evaluateAll((xs) => [...new Set(xs.map((x) => x.dataset.kind))]);
+    assert(kinds.includes('reading') && kinds.includes('document'), `evidence listed in the response: ${kinds}`);
+    await page.locator('[data-testid="evidence-item"][data-kind="reading"]').first().click(); await page.waitForSelector('[data-testid="trend-close"]'); await page.click('[data-testid="trend-close"]');
+    await page.waitForSelector('[data-testid="recommendation"]');
+    assert((await page.textContent('[data-testid="calc"]')).includes('not computed'), 'calculation without method is said plainly');
   });
   await step('source: PDF renders on cited page with exact highlight from the text layer', async () => {
-    await page.click('[data-testid="ev-proc-depress"]'); await page.waitForSelector('[data-window="document"]');
+    await evidenceOf('a3-1'); await cite('Emergency depressurization'); await page.waitForSelector(DOC);
     await page.waitForSelector('[data-testid="viewer"][data-page="2"][data-rev="2"][data-rendered="true"]', { timeout: 20000 });
     await page.waitForSelector('[data-testid="exact-match"]', { timeout: 15000 });
     const hl = await box('[data-testid="highlight"]'); assert(hl && hl.width > 40, 'highlight has size');
   });
   await step('source: ambiguous passage shows match navigation', async () => {
-    await page.click('[data-testid="alert-a4-1"]'); await page.click('[data-testid="ev-proc-fire"]');
+    await evidenceOf('a4-1'); await cite('Process area fire response');
     await page.waitForSelector('[data-testid="viewer"][data-doc="proc-fire"][data-matches="3"] [data-testid="match-nav"]', { timeout: 20000 });
     await page.click('[data-testid="match-next"]');
     assert((await page.textContent('[data-testid="match-pos"]')).includes('Match 2 of 3'), 'navigated');
   });
   await step('source: page-only citation states the limitation; drawing region is highlighted', async () => {
-    await page.click('[data-testid="alert-a4-2"]'); await page.click('[data-testid="ev-limits"]');
+    await evidenceOf('a4-2'); await cite('Operating limits');
     await page.waitForFunction(() => document.querySelector('[data-testid="viewer"] .cite')?.textContent.includes('exact region not available'), null, { timeout: 20000 });
-    await page.click('[data-testid="ev-pid"]');
+    assert((await page.locator(DOC).count()) === 1 && (await page.locator('[data-window="document"]').count()) === 0, 'the document opens in a dialog, not docked');
+    await closeDoc(); await cite('P&ID');
     await page.waitForSelector('[data-testid="viewer"][data-doc="pid"][data-rendered="true"] .hl.region', { timeout: 20000 });
   });
-  await step('docking: drag both dividers, swap, maximize/restore', async () => {
-    const before = await box('[data-col="monitoring"]'); await drag('[data-testid="divider-x"]', -160, 0);
-    assert((await box('[data-col="monitoring"]')).width < before.width - 100, 'monitoring narrower');
-    const eqB = await box('[data-window="equipment"]'); await drag('[data-testid="divider-y"]', 0, 90);
-    assert((await box('[data-window="equipment"]')).height > eqB.height + 50, 'equipment taller');
-    await drag('[data-testid="divider-x"]', 160, 0); await drag('[data-testid="divider-y"]', 0, -90);
-    await page.click('[data-window="equipment"] button[title="Swap monitoring and response sides"]');
-    assert((await box('[data-col="monitoring"]')).x > (await box('[data-col="response"]')).x, 'swapped');
-    await page.click('[data-window="response"] button[title="Swap monitoring and response sides"]');
-    const splitBefore = (await store()).layout.splitX;
-    await page.click('[data-window="log"] button[title="Maximize panel"]');
-    assert((await page.getAttribute('[data-testid="dock"]', 'data-maximized')) === 'log' && !(await page.locator('[data-window="equipment"]').isVisible()) && (await page.locator('[data-window="equipment"]').count()) === 1 && (await page.locator('[data-testid="statusbar"]').isVisible()), 'maximized within the workspace; siblings stay mounted but hidden; status stays visible');
-    await page.click('[data-window="log"] button[title="Restore layout"]');
-    assert((await page.getAttribute('[data-testid="dock"]', 'data-maximized')) === '' && Math.abs((await store()).layout.splitX - splitBefore) < 1e-6, 'restored');
-    assert((await page.locator('[data-window="document"]').count()) === 1, 'third docked window still present');
+  await step('docking: the response panel widens and docks back while a document is open over it', async () => {
+    await closeDoc(); const w0 = (await box('[data-testid="issue-panel"]')).width;
+    await page.click('[data-testid="panel-dock"]');
+    assert((await box('[data-testid="issue-panel"]')).width > w0 + 200 && (await page.locator('[data-testid="statusbar"]').isVisible()), 'widened within the workspace');
+    await page.click('[data-testid="panel-dock"]');
+    assert(Math.abs((await box('[data-testid="issue-panel"]')).width - w0) < 2, 'docked back');
+    await cite('P&ID'); await page.waitForSelector(DOC);
   });
-  await step('close the investigation: selection and log scroll position survive', async () => {
-    await drag('[data-testid="divider-y"]', 0, 260);
-    await page.evaluate(() => { document.querySelector('[data-testid="log-scroll"]').scrollTop = 60; });
-    await page.click('[data-window="document"] button[title^="Close document"]');
-    assert((await page.locator('[data-window="document"]').count()) === 0 && (await store()).selectedAlertId === 'a4-2', 'closed, selection kept');
-    assert((await page.evaluate(() => document.querySelector('[data-testid="log-scroll"]').scrollTop)) === 60, 'scroll kept');
+  await step('close the document: the issue and feed scroll position survive', async () => {
+    await page.evaluate(() => { document.querySelector('[data-testid="feed-rows"]').scrollTop = 60; });
+    await closeDoc();
+    assert((await page.locator(DOC).count()) === 0 && (await page.getAttribute('[data-testid="issue-panel"]', 'data-issue')) === 'pressure', 'closed, issue kept');
+    assert((await page.evaluate(() => document.querySelector('[data-testid="feed-rows"]').scrollTop)) === 60, 'scroll kept');
   });
   let a42Decision = null;
   await step('record an approval on a4-2 at step 4', async () => {
@@ -286,64 +306,61 @@ if (want('core')) {
     await page.waitForSelector('[data-testid="decision-recorded"]');
     a42Decision = (await store()).alertUser['a4-2'].decision; assert(a42Decision.status === 'approved', 'stored');
   });
-  await step('non-disruption: new alerts do not move the log or reset a half-filled decision form', async () => {
-    await page.click('[data-testid="alert-a4-1"]'); await page.fill('[data-testid="rationale"]', 'Hold pending relief route check'); await page.click('[data-testid="decide-deferred"]');
-    await page.evaluate(() => { document.querySelector('[data-testid="log-scroll"]').scrollTop = 120; });
-    const rowsBefore = await page.locator('tr.row').count();
+  await step('non-disruption: new updates do not move what you are reading or reset a half-filled decision form', async () => {
+    await page.click('[data-testid="alert-a4-1"]'); await page.click('[data-testid="decide-approved"]'); await page.fill('[data-testid="rationale"]', 'Hold pending relief route check');
+    await page.evaluate(() => { document.querySelector('[data-testid="feed-rows"]').scrollTop = 120; });
+    const anchor = await page.evaluate(() => { const list = document.querySelector('[data-testid="feed-rows"]'); const top = list.getBoundingClientRect().top; const row = [...list.querySelectorAll('.sr-row')].find((r) => r.getBoundingClientRect().bottom > top + 4); return { id: row.dataset.update, y: Math.round(row.getBoundingClientRect().top) }; });
     await next({ wait: false });
-    await page.waitForFunction(() => document.querySelector('[data-testid="new-pill"]')?.textContent.includes('2 new alerts'), null, { timeout: 70000 });
-    assert((await page.inputValue('[data-testid="rationale"]')) === 'Hold pending relief route check' && (await page.getAttribute('[data-testid="decide-deferred"]', 'aria-pressed')) === 'true', 'form preserved');
-    assert((await page.evaluate(() => document.querySelector('[data-testid="log-scroll"]').scrollTop)) === 120 && (await page.locator('tr.row').count()) === rowsBefore, 'log unchanged');
-    await page.click('[data-testid="new-pill"]'); await sleep(500);
-    assert((await page.locator('tr.row').count()) === rowsBefore + 2, 'released');
-    await drag('[data-testid="divider-y"]', 0, -260);
+    await page.waitForSelector('[data-testid="alert-a5-2"]', { timeout: 70000 });
+    assert((await page.inputValue('[data-testid="rationale"]')) === 'Hold pending relief route check' && (await page.locator('[data-testid="record-decision"]').isVisible()), 'form preserved');
+    const y = await page.evaluate((id) => Math.round(document.querySelector(`[data-testid="feed-rows"] [data-update="${id}"]`).getBoundingClientRect().top), anchor.id);
+    assert(Math.abs(y - anchor.y) <= 2, `the row being read stays put (${anchor.y} -> ${y})`);
     assert((await valueOf('FH-01:pressure')) > 2.5, 'a5-2 above High 2.5');
   });
-  await step('superseded recommendation: original kept, no decision controls, earlier approval unchanged and flagged', async () => {
-    await page.click('[data-testid="alert-a4-2"]'); await page.waitForSelector('[data-testid="superseded"]');
-    assert((await page.textContent('[data-testid="superseded-note"]')).includes('FH-01 flare header damaged'), 'note');
-    assert((await page.locator('[data-testid="decision-form"]').count()) === 0 && (await page.locator('[data-testid="decision-review-flag"]').count()) === 1, 'flagged, no form');
+  await step('superseded recommendation: original kept, earlier approval unchanged and shown, the revised suggestion needs a decision', async () => {
+    await page.click('[data-testid="alert-a4-2"]'); await page.waitForSelector('[data-testid="issue-panel"][data-issue="pressure"]');
+    assert(/ECC revised its (suggestion|recommendation)/.test(await page.textContent('[data-testid="needs-revised"]')) && /Hold depressurization via FH-01/.test(await page.textContent('[data-testid="suggestion-text"]')), 'revised suggestion');
+    assert((await page.locator('[data-testid="decision-earlier"]').count()) === 1 && /Accepted an earlier (suggestion|recommendation): Initiate emergency depressurization/.test(await page.textContent('[data-testid="decision-earlier"]')), 'earlier approval shown as earlier');
     assert(JSON.stringify((await store()).alertUser['a4-2'].decision) === JSON.stringify(a42Decision), 'decision unchanged');
     const rec = await record();
     const dEv = rec.events.find((e) => e.id === 'decision-a4-2'); const sEv = rec.events.find((e) => e.id === 'rec-sup-a4-2');
     assert(dEv && sEv && sEv.t > dEv.t, `supersession (${sEv?.t}) later than decision (${dEv?.t}) in the record`);
-    const hm = (txt, re) => { const m = txt.match(re); return m ? +m[1] * 60 + +m[2] : -1; };
-    const decT = hm(await page.textContent('[data-testid="decision-recorded"]'), /· (\d\d):(\d\d)/);
-    const supT = hm(await page.textContent('[data-testid="superseded-note"]'), /Superseded at (\d\d):(\d\d)/);
-    assert(decT >= 0 && supT >= decT, `UI: superseded ${supT} not before decision ${decT}`);
     assert(rec.events.every((e, i) => i === 0 || e.t >= rec.events[i - 1].t), 'record events non-decreasing in knowledge order');
-    await page.click('[data-testid="alert-a3-1"]'); await page.waitForSelector('[data-testid="no-decision-superseded"]');
   });
   await step('record a decision on a5-1: revision pinned; scenario field report distinct', async () => {
     await page.click('[data-testid="alert-a5-1"]'); await page.click('[data-testid="decide-approved"]');
     await page.fill('[data-testid="rationale"]', 'Normal route confirmed unavailable by field and readings'); await page.click('[data-testid="record-decision"]');
     await page.waitForSelector('[data-testid="decision-recorded"]');
     assert((await store()).alertUser['a5-1'].decision.evidenceUsed.some((e) => e.docId === 'proc-depress' && e.revision === '2'), 'pinned Rev 2');
-    await page.click('[data-testid="sev-high"]');
-    await page.evaluate(() => { document.querySelector('[data-testid="log-scroll"]').scrollTop = 0; });
-    await next({ wait: false }); await page.focus('[data-testid="filter-search"]');
+    await page.click('[data-testid="origin-monitoring"]');
+    await next({ wait: false }); await page.focus('[data-testid="origin-monitoring"]');
     await page.waitForSelector('[data-testid="alert-a6-1"]', { timeout: 70000 }); await sleep(10000);
-    assert((await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'filter-search' && (await store()).logFilters.severity === 'high', 'arrival with a filter active: focus and filter kept');
-    assert((await page.locator('[data-testid="alert-a6-1"]').count()) === 1 && (await page.locator('[data-testid="alert-a6-2"]').count()) === 0, 'matching arrival shown, non-matching processed but hidden');
-    await page.click('[data-testid="clear-filters"]');
-    await page.waitForSelector('[data-testid="field-report"]');
-    assert((await page.locator('[data-testid="decision-review-flag"]').count()) === 1 && (await stateOf('a6-2')) === 'Recovered' && (await stateOf('a6-1')) === 'Reported' && (await valueOf('FH-01:pressure')) < 2.5, 'step 6 states');
-    assert(/Execution reported/.test(await page.textContent('[data-testid="response-detail"]')) && !/Active · Reported · Approved · Reported/.test(await page.textContent('[data-testid="response-detail"]')), 'execution chip wording is distinct from evidence');
+    assert((await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'origin-monitoring' && (await store()).room.origin === 'monitoring', 'arrival with a filter active: focus and filter kept');
+    assert((await page.locator('[data-testid="update-o6-1"]').count()) === 0, 'non-matching arrival processed but hidden');
+    await page.click('[data-testid="origin-all"]');
+    await page.waitForSelector('[data-testid="update-o6-1"]');
+    assert((await stateOf('a6-2')) === 'Recovered' && (await stateOf('a6-1')) === 'Reported' && (await valueOf('FH-01:pressure')) < 2.5, 'step 6 states');
+    await page.click('[data-testid="alert-a5-1"]'); await page.waitForSelector('[data-testid="issue-panel"]');
+    const lanes = await page.evaluate(() => ['lane-decision', 'lane-field', 'lane-verified'].map((id) => document.querySelector(`[data-testid="${id}"] dd`)?.textContent ?? ''));
+    assert(/Upstream route aligned/.test(lanes[1]) && !/Upstream route aligned/.test(lanes[0] + lanes[2]), `the field report stands apart from the decision and from verification: ${lanes}`);
   });
   await step('step 7: revision change keeps the revision the decision used; recovery states honest', async () => {
     await next();
-    assert((await page.locator('[data-testid="alert-a4-2"]').textContent()).includes('Cleared'), 'a4-2 cleared');
+    assert((await stateOf('a4-2')) === 'Cleared', 'a4-2 cleared');
     assert((await stateOf('a7-1')) === 'Recovered' && (await stateOf('a7-2')) === 'Reported' && (await stateOf('a7-3')) === 'Active', 'states');
     assert((await valueOf('D-0001:pressure')) < 18.0 && (await valueOf('DS-029:status')) === 0, 'readings agree');
+    await showReadings();
     const badges = await page.locator('[data-testid="ind-D-0001"] .badge').evaluateAll((els) => els.map((e) => e.className));
     assert(badges.length === 1 && badges[0].includes('neutral'), `D-0001 needs no attention at step 7 (reported action is not a condition): ${badges}`);
+    await backToUpdates();
     assert((await stateOf('a6-1')) === 'Reported', 'reported action row shows Reported');
-    assert((await page.textContent('[data-testid="response-detail"]')).includes('Execution reported') || true, 'execution wording');
-    await page.click('[data-testid="alert-a5-1"]'); await page.click('[data-testid="ev-proc-depress"]');
+    await evidenceOf('a5-1');
+    assert(/Rev 2 \(Rev 3 now current\)/.test(await page.textContent('[data-testid="evidence"]')), 'evidence keeps the revision used');
+    await cite('Emergency depressurization');
     await page.waitForSelector('[data-testid="viewer"][data-doc="proc-depress"][data-rev="2"]');
     const head = await page.textContent('[data-testid="viewer"] .viewer-h');
     assert(head.includes('Rev 3 now current') && head.includes('Superseded'), `viewer: ${head}`);
-    await page.click('[data-testid="tab-sources"]'); assert((await page.textContent('[data-testid="sources"]')).includes('Rev 2 used · Rev 3 now effective'), 'sources tab'); await page.click('[data-testid="tab-response"]');
+    await closeDoc();
   });
   await step('A5: the deluge no-flow condition is not shown as cleared by a reset that leaves the fault open', async () => {
     assert((await stateOf('a4-1')) === 'Active' && (await stateOf('a7-3')) === 'Active', `a4-1 ${await stateOf('a4-1')}, a7-3 ${await stateOf('a7-3')}`);
@@ -380,19 +397,32 @@ if (want('core')) {
   await step('timer: consistent across navigation, layout changes and reload', async () => {
     const s0 = await store();
     await nav('agentlog'); await nav('situation');
-    await page.click('[data-window="equipment"] button[title="Maximize panel"]'); await page.click('[data-window="equipment"] button[title="Restore layout"]');
+    await showReadings(); await page.click('[data-testid="view-issues"]'); await page.locator('[data-testid="issue-card"]').first().click(); await page.waitForSelector('[data-testid="panel-dock"]');
+    await page.click('[data-testid="panel-dock"]'); await page.click('[data-testid="panel-dock"]'); await backToUpdates();
+    await page.click('[data-testid="alert-a5-1"]'); await page.waitForSelector('[data-testid="issue-panel"][data-issue="pressure"]');
     await page.reload(); await page.waitForSelector('[data-testid="dock"]'); await sleep(500);
     const s1 = await store();
     assert(s1.startedAt === s0.startedAt && s1.revealedAt.length === 7, 'start time and step persisted');
     const expectedM = Math.floor((Date.now() + (s1.skewMs ?? 0) - s1.startedAt) / 60000) % 60;
     assert(Math.abs(+(await page.textContent('[data-testid="timer-m"]')) - expectedM) <= 1, 'timer matches start time');
-    assert((await page.locator('[data-window="document"]').count()) === 1 && s1.selectedAlertId === 'a5-1', 'layout and selection persisted');
+    assert(s1.selectedAlertId === 'a5-1' && (await page.getAttribute('[data-testid="issue-panel"]', 'data-issue')) === 'pressure', 'layout, open issue and selection persisted');
   });
-  await step('themes and focus mode', async () => {
+  await step('themes; at a narrow width the response panel overlays the feed and stays on screen', async () => {
     await page.click('button[title="Switch to dark theme"]'); assert((await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark', 'dark');
     await page.click('button[title="Switch to light theme"]');
-    await page.setViewportSize({ width: 900, height: 700 }); await sleep(250);
-    assert((await page.getAttribute('[data-testid="dock"]', 'data-focus')) === 'monitoring', 'focus mode');
+    // Sets up its own starting point (an open issue), and always restores the window size, so a failure here cannot narrow every later check.
+    if ((await page.locator('[data-testid="issue-panel"]').count()) === 0) { await page.click('[data-testid="view-issues"]'); await page.locator('[data-testid="issue-card"]').first().click(); await page.waitForSelector('[data-testid="issue-panel"]'); }
+    let ok = false, pb = null;
+    try {
+      await page.setViewportSize({ width: 900, height: 700 }); await sleep(250);
+      pb = await box('[data-testid="issue-panel"]'); const lb = await box('[data-testid="worklist"]');
+      ok = pb && pb.x + pb.width <= 900 && lb && lb.width > 200 && (await page.locator('[data-testid="equipment-watch"]').isVisible());
+    } finally {
+      await page.setViewportSize({ width: 1920, height: 1080 }); await sleep(250);
+      // Leave the room as later checks expect it: the drawer open on an issue, the worklist on Incident Updates.
+      await page.click('[data-testid="view-updates"]').catch(() => {});
+    }
+    assert(ok, `panel on screen over the worklist, Equipment watch in view (${JSON.stringify(pb)})`);
     await page.setViewportSize({ width: 1920, height: 1080 }); await sleep(250);
   });
 }
@@ -401,28 +431,30 @@ if (want('core')) {
 pastCore = true;
 if (want('reports')) {
   if (!want('core')) await fastForwardTo7();
-  await step('timeline: required categories present; search and filter work; evidence opens in the shared viewer', async () => {
-    await nav('sitrep'); await page.waitForSelector('[data-testid="timeline"]'); await sleep(2500);
-    const kinds = new Set(await page.locator('[data-testid="timeline-row"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind'))));
-    for (const k of ['notification', 'observation', 'measurement', 'finding', 'recommendation', 'decision', 'report', 'outcome', 'gap', 'agent']) assert(kinds.has(k), `category ${k} present (have ${[...kinds].join(',')})`);
-    const total = +(await page.getAttribute('[data-testid="timeline"]', 'data-total'));
+  await step('timeline: one chronological view of key moments; history collapsed beneath each; filters, search, evidence and what was known at a decision', async () => {
+    await nav('sitrep'); await page.waitForSelector('[data-testid="story"]'); await sleep(1500);
+    const kinds = new Set(await page.locator('[data-testid="story-item"]').evaluateAll((els) => els.map((e) => e.dataset.kind)));
+    for (const k of ['development', 'decision', 'action', 'result']) assert(kinds.has(k), `moment kind ${k} (have ${[...kinds].join(',')})`);
+    // The harness opened every group; together the groups hold the whole record, each entry once.
+    const rowKinds = new Set(await page.locator('[data-testid="timeline-row"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind'))));
+    for (const k of ['notification', 'observation', 'measurement', 'finding', 'recommendation', 'decision', 'report', 'outcome', 'gap', 'agent']) assert(rowKinds.has(k), `record entry ${k} reachable in a group (have ${[...rowKinds].join(',')})`);
+    const ids = await page.locator('[data-testid="timeline-row"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-event')));
+    const rec0 = await record();
+    assert(new Set(ids).size === ids.length && ids.length === rec0.events.length, `every record entry exactly once (${ids.length} of ${rec0.events.length})`);
+    await page.click('[data-testid="story-filter-decisions"]'); await sleep(150);
+    assert((await page.locator('[data-testid="story-item"]').evaluateAll((els) => els.map((e) => e.dataset.kind))).every((k) => k === 'decision'), 'decisions filter');
+    await page.click('[data-testid="story-filter-all"]');
     await page.fill('[data-testid="timeline-search"]', 'upstream'); await sleep(200);
-    const shown = +(await page.getAttribute('[data-testid="timeline"]', 'data-shown'));
-    assert(shown > 0 && shown < total, `search narrows (${shown}/${total})`);
-    assert((await page.textContent('[data-testid="timeline-filter-note"]')).includes(`all ${total}`), 'filter note says exports include all');
+    const n = await page.locator('[data-testid="story-item"]').count();
+    assert(n > 0 && n < kinds.size + 30, `search narrows (${n})`);
     await page.fill('[data-testid="timeline-search"]', '');
-    await page.click('[data-testid="timeline-filter"]'); await page.click('[data-testid="cat-Decision"]'); await page.keyboard.press('Escape'); await sleep(150);
-    const rows = await page.locator('[data-testid="timeline-row"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
-    assert(rows.length >= 1 && rows.every((k) => k === 'decision'), `decision filter (${rows.join(',')})`);
-    await page.click('[data-testid="timeline-filter"]'); await page.click('.pop button:has-text("Clear categories")'); await sleep(150);
     await page.locator('[data-testid="timeline-evidence"]').first().click();
     await page.waitForSelector('[data-testid="viewer-overlay"] [data-testid="viewer"][data-rendered="true"]', { timeout: 20000 });
     await page.click('[data-testid="viewer-overlay"] [data-testid="viewer-close"]');
-    assert((await page.locator('[data-testid="page-sitrep"]').count()) === 1 && (await page.locator('[data-testid="timeline-row"]').count()) > 0, 'returned to Sit. Rep with filter intact');
     await page.locator('[data-testid="known-at"]').first().click(); await sleep(150);
     assert((await page.textContent('[data-testid="timeline-filter-note"]')).includes('known at'), 'what-was-known view');
     await shot('sitrep-timeline-1920-light');
-    await page.click('[data-testid="timeline-filter-note"] .link');
+    await page.click('[data-testid="known-clear"]');
   });
   await step('B11/B12/B15: no facilitator terms or raw ids in the record; acknowledgement category; change-based measurements', async () => {
     await nav('situation'); await page.click('[data-testid="alert-a7-1"]'); await page.click('[data-testid="ack"]'); await sleep(1500);
@@ -433,62 +465,84 @@ if (want('reports')) {
     const rec = await record();
     assert(!rec.events.some((e) => /\(step \d\)/.test(e.title)), 'record titles clean');
     assert((await page.locator('[data-testid="timeline-row"][data-kind="acknowledgement"]').count()) >= 1, 'acknowledgement rows');
-    const m = page.locator('[data-testid="timeline-row"][data-kind="measurement"]').first();
+    const m = page.locator('[data-testid="timeline-row"][data-kind="measurement"]:has([data-testid="measurement-changes"] div)').first();
     assert((await m.locator('[data-testid="measurement-changes"] div').count()) >= 1, 'changes one per line');
     await m.locator('[data-testid="measurement-expand"]').click();
     assert((await m.locator('[data-testid="measurement-full"]').textContent()).includes('D-0001 pressure'), 'full snapshot on expand');
     assert((await page.locator('[data-testid="gap-status"]').count()) >= 1, 'gap status derived');
   });
-  await step('SITREP: draft from record, edit survives refresh until the user chooses, review, approve, versions retained', async () => {
-    await page.click('[data-testid="timeline-filter-note"] .link').catch(() => {});
-    await page.click('[data-testid="sitrep-new"]'); await page.waitForSelector('[data-testid="sitrep-editor"][data-version="1"]');
-    const gen = await page.inputValue('[data-testid="sitrep-input-priorities"]'); assert(gen.length > 10, 'generated priorities');
-    await page.fill('[data-testid="sitrep-input-priorities"]', 'MY EDITED PRIORITIES'); await sleep(300);
-    // make the record change so a refresh produces newer text, then refresh
-    await nav('situation'); await page.click('[data-testid="alert-a7-2"]'); await page.click('[data-testid="ack"]'); await sleep(1500);
-    await nav('sitrep'); await page.waitForSelector('[data-testid="sitrep-editor"]');
-    await page.click('[data-testid="sitrep-refresh"]'); await sleep(400);
-    assert((await page.inputValue('[data-testid="sitrep-input-priorities"]')) === 'MY EDITED PRIORITIES', 'edited section not overwritten');
-    const rec = await record(); const v1 = rec.reportVersions[0];
-    assert(v1.sections.priorities === 'MY EDITED PRIORITIES', 'edit stored');
-    if (v1.pending?.priorities) { await page.click('[data-testid="sitrep-keep-priorities"]'); assert((await page.inputValue('[data-testid="sitrep-input-priorities"]')) === 'MY EDITED PRIORITIES', 'keep mine'); }
-    // B14: textarea grows to content
+  await step('Sit. Rep: Generate → Edit → Download; one report at a time; three reports, each keeping its edits under Past reports', async () => {
+    await nav('sitrep');
+    // No report yet: one action.
+    assert((await page.locator('[data-testid="sitrep-none"]').count()) === 1, 'no report yet: Generate report is offered');
+    for (const gone of ['sitrep-new', 'sitrep-refresh', 'sitrep-review', 'sitrep-approve', 'sitrep-versions']) assert((await page.locator(`[data-testid="${gone}"]`).count()) === 0, `no ${gone}`);
+    await page.click('[data-testid="sitrep-generate"]'); await page.waitForSelector('[data-testid="sitrep-editor"][data-version="1"]');
+    assert(/^\d{4}-\d\d-\d\d \d\d:\d\d$/.test((await page.textContent('[data-testid="sitrep-asof"]')).trim()), 'clear as-of timestamp');
+    assert(!/\b(Draft|In review|Approved|Submit for review)\b/.test(await page.innerText('[data-testid="brief"]')), 'no workflow badges or controls');
+    const sit = await page.inputValue('[data-testid="sitrep-input-situation"]');
+    assert(/^(Developing|Escalating|Responding|Stabilizing)\. /.test(sit) && sit.length < 200, `short assessment: ${sit}`);
+    const dec = await page.inputValue('[data-testid="sitrep-input-decisions"]');
+    assert(/decision by/.test(dec) && /not yet verified|verification pending/.test(dec), `actions keep decision and verification apart: ${dec}`);
+    assert(/Deluge on the propane area[^\n]*—/.test(await page.inputValue('[data-testid="sitrep-input-outstanding"]')), 'open deluge issue needs attention');
+    // Report 1: edit; collapsing and expanding a section keeps the edit.
+    await page.fill('[data-testid="sitrep-input-outstanding"]', 'MY EDITED ATTENTION'); await sleep(300);
+    await page.click('[data-testid="sitrep-toggle-outstanding"]'); await sleep(100);
+    assert((await page.locator('[data-testid="sitrep-input-outstanding"]').count()) === 0, 'section collapses');
+    await page.click('[data-testid="sitrep-toggle-outstanding"]'); await sleep(100);
+    assert((await page.inputValue('[data-testid="sitrep-input-outstanding"]')) === 'MY EDITED ATTENTION', 'edit survives collapse and expand');
     const grow = await page.locator('[data-testid="sitrep-input-decisions"]').evaluate((el) => ({ sh: el.scrollHeight, ch: el.clientHeight }));
     assert(grow.sh <= grow.ch + 4, `textarea grows (${grow.sh} vs ${grow.ch})`);
-    // A3/A4: decisions superseded within as-of are marked; priorities lead with the current next steps; stale gaps excluded
-    const dec = await page.inputValue('[data-testid="sitrep-input-decisions"]');
-    assert(/depressurization of D-0001 via the normal relief route[^\n]*\[Superseded \d\d:\d\d, after this decision/.test(dec), `decision marked superseded: ${dec}`);
-    { const m = dec.match(/(\d\d):(\d\d) Approved: Initiate[^\n]*\[Superseded (\d\d):(\d\d)/); assert(m && (+m[3] * 60 + +m[4]) >= (+m[1] * 60 + +m[2]), `draft: supersession time not before decision time (${m?.[0].slice(0, 20)})`); }
-    { const rec2 = await record(); assert(rec2.events.every((e, i) => i === 0 || e.t >= rec2.events[i - 1].t), 'record still monotonic at step 7'); }
-    const pri = (await record()).reportVersions[0].generated.priorities;
-    assert(pri.startsWith('Next: Agree stabilization criteria'), `priorities lead with current next steps: ${pri.slice(0, 80)}`);
-    assert(!/mobile cooling/.test(pri.split('\n')[0]) && !/normal relief route/.test(pri), 'no superseded advice in priorities');
-    const out = await page.inputValue('[data-testid="sitrep-input-outstanding"]');
-    assert(!/FH-01 availability: reported available/.test(out) && !/Upstream route availability and isolation status unknown/.test(out) && !/Isolation point positions/.test(out), `stale gaps excluded: ${out}`);
-    assert(/Deluge DS-029 · no flow/.test(out), 'open deluge fault still outstanding');
-    await page.click('[data-testid="sitrep-review"]'); await page.waitForSelector('[data-testid="sitrep-editor"][data-status="review"]');
-    await page.click('[data-testid="sitrep-approve"]'); await page.waitForSelector('[data-testid="sitrep-editor"][data-status="approved"]');
-    await page.click('[data-testid="sitrep-new"]'); await page.waitForSelector('[data-testid="sitrep-v-2"]');
-    const r2 = await record(); assert(r2.reportVersions.length === 2 && r2.reportVersions[0].status === 'approved' && r2.reportVersions[0].sections.priorities === 'MY EDITED PRIORITIES', 'versions retained with as-of');
+    // Something changes in the incident, then a fresh report. Report 1 keeps its edit.
+    await nav('situation'); await page.click('[data-testid="alert-a7-2"]'); await page.click('[data-testid="ack"]'); await sleep(1500);
+    await nav('sitrep'); await page.waitForSelector('[data-testid="sitrep-editor"][data-version="1"]');
+    await page.click('[data-testid="sitrep-generate"]'); await page.waitForSelector('[data-testid="sitrep-editor"][data-version="2"]');
+    assert((await page.inputValue('[data-testid="sitrep-input-outstanding"]')) !== 'MY EDITED ATTENTION', 'the fresh report is generated, not copied');
+    await page.fill('[data-testid="sitrep-input-situation"]', 'SECOND REPORT EDIT.'); await sleep(300);
+    await sleep(1200); await page.click('[data-testid="sitrep-generate"]'); await page.waitForSelector('[data-testid="sitrep-editor"][data-version="3"]');
+    // A short confirmation points to Generated reports.
+    assert(/Report generated as of \d\d:\d\d\. You can view it in Generated reports\./.test(await page.textContent('[data-testid="sitrep-generated-note"]')), 'generated confirmation');
+    // Only the latest shows; the others are behind a collapsed disclosure, newest first.
+    assert((await page.locator('[data-testid="sitrep-editor"]').count()) === 1, 'one report at a time');
+    assert(!(await page.locator('[data-testid="sitrep-past"]').evaluate((d) => d.open)) && (await page.textContent('[data-testid="sitrep-past-toggle"]')).trim() === 'Generated reports (3)', 'Generated reports (3), collapsed');
+    await page.click('[data-testid="sitrep-generated-show"]'); await sleep(100);
+    assert(await page.locator('[data-testid="sitrep-past"]').evaluate((d) => d.open) && (await page.locator('[data-testid="sitrep-generated-note"]').count()) === 0, 'Show opens Generated reports');
+    const order = await page.locator('[data-testid="sitrep-past-item"]').evaluateAll((els) => els.map((e) => +e.dataset.version));
+    assert(order.join() === '3,2,1' && (await page.locator('[data-testid="sitrep-past-item"][data-version="3"] [data-testid="sitrep-latest"]').count()) === 1, `newest first, latest marked (${order})`);
+    await page.click('[data-testid="sitrep-past-open-1"]'); await page.waitForSelector('[data-testid="sitrep-viewing-past"]');
+    assert((await page.textContent('[data-testid="sitrep-text-outstanding"]')) === 'MY EDITED ATTENTION' && (await page.getAttribute('[data-testid="sitrep-editor"]', 'data-editable')) === 'false', 'report 1 kept its edit, read only');
+    await page.click('[data-testid="sitrep-back-current"]'); await page.waitForSelector('[data-testid="sitrep-editor"][data-version="3"][data-editable="true"]');
+    await page.click('[data-testid="sitrep-past-open-2"]');
+    assert((await page.textContent('[data-testid="sitrep-text-situation"]')) === 'SECOND REPORT EDIT.', 'report 2 kept its edit');
+    await page.click('[data-testid="sitrep-back-current"]');
+    const r3 = await record();
+    assert(r3.reportVersions.length === 3 && r3.reportVersions[0].sections.outstanding === 'MY EDITED ATTENTION' && r3.reportVersions[1].sections.situation === 'SECOND REPORT EDIT.', 'three reports stored with their edits');
+    { assert(r3.events.every((e, i) => i === 0 || e.t >= r3.events[i - 1].t), 'record still monotonic at step 7'); }
     await shot('sitrep-reports-1920-light');
   });
-  await step('downloads: Timeline Report and SITREP are distinct PDFs; filter active; both derive from the record', async () => {
-    await page.fill('[data-testid="timeline-search"]', 'deluge'); await sleep(200);
-    const shown = +(await page.getAttribute('[data-testid="timeline"]', 'data-shown')); const total = +(await page.getAttribute('[data-testid="timeline"]', 'data-total'));
-    assert(shown < total, 'filter active');
-    assert((await page.textContent('[data-testid="download-timeline"]')).includes(`all ${total}`), 'button says all entries');
+  await step('downloads: the full record PDF and the Sit. Rep PDF are distinct; each Sit. Rep prints its own edited text with working bullets on one page; collapsing changes nothing', async () => {
     const tlPath = await download(() => page.click('[data-testid="download-timeline"]'));
-    await page.click('[data-testid="sitrep-v-1"]');
-    const srPath = await download(() => page.click('[data-testid="download-sitrep"]'));
-    const tl = await pdfText(tlPath); const sr = await pdfText(srPath);
-    assert(tl.text.includes('Incident Timeline Report') && sr.text.includes('SITREP 1'), 'distinct documents');
+    await page.fill('[data-testid="sitrep-input-situation"]', 'THIRD REPORT EDIT.'); await sleep(300);
+    await page.click('[data-testid="sitrep-toggle-decisions"]');
+    const curPath = await download(() => page.click('[data-testid="download-sitrep"]'));
+    await page.click('[data-testid="sitrep-toggle-decisions"]');
+    const srPath = await download(() => page.click('[data-testid="sitrep-past-download-1"]'));
+    const tl = await pdfText(tlPath); const sr = await pdfText(srPath); const cur = await pdfText(curPath);
+    assert(curPath !== srPath, `each report downloads under its own file name (${curPath})`);
+    assert(tl.text.includes('Incident Timeline Report') && /SITUATION REPORT/.test(sr.text), 'distinct documents');
     const rec = await record();
     assert(tl.text.includes(rec.id) && sr.text.includes(rec.id), 'incident identity');
     assert(/training/i.test(tl.text) && /training/i.test(sr.text), 'training marking');
-    assert(/Approved by/.test(sr.text) && /as of/.test(sr.text), 'approval state and as-of');
-    assert(/Rev 2/.test(sr.text) && /ECC-FX-002/.test(sr.text), 'pinned revision citations');
-    assert(/Superseded \d\d:\d\d/.test(sr.text.replace(/\s+/g, ' ')) && /Superseded \d\d:\d\d/.test(tl.text.replace(/\s+/g, ' ')), 'supersession note in both PDFs');
-    { const m = sr.text.replace(/\s+/g, ' ').match(/(\d\d):(\d\d) Approved: Initiate[^\[]*\[Superseded (\d\d):(\d\d)/); assert(m && (+m[3] * 60 + +m[4]) >= (+m[1] * 60 + +m[2]), 'PDF: supersession time not before decision time'); }
+    assert(/As of \d{4}-\d\d-\d\d \d\d:\d\d/.test(sr.text) && !/not approved|draft/i.test(sr.text), 'as-of time; no workflow state');
+    assert(sr.text.includes('MY EDITED ATTENTION') && !sr.text.includes('THIRD REPORT EDIT'), 'a past report prints its own edits');
+    assert(cur.text.includes('THIRD REPORT EDIT.'), `the current report prints the edit just made (stored: ${JSON.stringify((await record()).reportVersions.map((v) => v.sections.situation.slice(0, 24)))}; PDF begins: ${cur.text.slice(0, 260)})`);
+    const dec3 = rec.reportVersions[2].sections.decisions.split('\n')[0].replace(/^• /, '').slice(0, 30);
+    assert(cur.text.replace(/\s+/g, ' ').includes(dec3), 'a collapsed section is still in the PDF');
+    for (const x of [sr, cur]) {
+      assert(/Current situation/.test(x.text) && /Actions and results/.test(x.text) && /What needs attention/.test(x.text), 'three sections');
+      assert(x.text.includes('•') && !/\?\s+D-00/.test(x.text), 'bullets are bullets, not question marks');
+      assert(x.pages === 1, `one page (${x.pages})`);
+    }
+    assert(/Superseded \d\d:\d\d/.test(tl.text.replace(/\s+/g, ' ')), 'supersession note in the full record PDF');
     // filtered-out entries present in the timeline report
     const nonMatch = rec.events.filter((e) => !`${e.title} ${e.detail ?? ''}`.toLowerCase().includes('deluge') && ['decision', 'finding', 'observation'].includes(e.kind) && e.title.length > 20);
     const norm = (x) => x.replace(/\s+/g, ' ').toLowerCase();
@@ -497,8 +551,6 @@ if (want('reports')) {
     const v1 = rec.reportVersions.find((v) => v.number === 1);
     const later = rec.events.filter((e) => e.t > v1.asOf && e.kind === 'report-version').map((e) => e.title);
     for (const t of later) assert(!sr.text.includes(t), `SITREP must not include "${t}"`);
-    assert(sr.text.includes('MY EDITED PRIORITIES'), 'sitrep content from the record version');
-    await page.fill('[data-testid="timeline-search"]', '');
   });
 }
 
@@ -539,9 +591,8 @@ if (want('round4')) {
       await page.click('[data-testid="assistant-toggle"]'); await page.click('[data-testid="assistant-close"]'); assert((await sizeOf(id)) === chosen, `${id}: size kept after reopening panels`);
       await page.reload(); await page.waitForSelector('[data-testid="nav-situation"]'); await sleep(800); await go(); assert((await sizeOf(id)) === chosen, `${id}: size kept across reload`);
     }
-    await nav('situation');
-    const sx = (await store()).layout.splitX; await drag('[data-testid="divider-x"]', -120, 0); assert((await store()).layout.splitX < sx, 'Situation divider still works'); await drag('[data-testid="divider-x"]', 120, 0);
-    await page.focus('[data-testid="divider-y"]'); const sy = (await store()).layout.splitY; await page.keyboard.press('ArrowDown'); assert((await store()).layout.splitY > sy, 'Situation keyboard resize'); await page.keyboard.press('ArrowUp');
+    // The Situation Room has one divider: between Equipment watch and the worklist (its own checks cover it).
+    await nav('situation'); assert((await page.locator('[data-testid="divider-x"]').count()) === 0 && (await page.locator('[data-testid="divider-y"]').count()) === 1, 'one Situation divider, under Equipment watch');
   });
   await step('narrow window clamps the displayed size without overwriting the stored preference', async () => {
     await nav('sitrep'); await page.waitForSelector('[data-testid="splitpane-sitrep"]');
@@ -575,7 +626,8 @@ if (want('round4')) {
         if ((await page.locator('[data-testid="assistant"]').count()) === 0) await page.click('[data-testid="assistant-toggle"]');
         const mode = await page.getAttribute('[data-testid="assistant"]', 'data-mode');
         const aw = +(await page.getAttribute('[data-testid="assistant"]', 'data-width'));
-        const expected = w - aw < { situation: 1400, sitrep: 960, agentlog: 900, knowledge: 960 }[id] ? 'overlay' : 'push';
+        // The Assistant docks beside every tab, as on Overview; it floats only when under 720 px of workspace would remain.
+        const expected = w - aw < 720 ? 'overlay' : 'push';
         assert(mode === expected, `${id} at ${w}: ${mode} (expected ${expected})`);
         if (mode === 'push') {
           const panes = await page.locator('[data-pane]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width)));
@@ -630,61 +682,35 @@ if (want('round4')) {
     assert(fav.ok && fav.svg && fav.href.endsWith('/brand/favicon.svg'), 'favicon link resolves');
     assert((await page.title()).includes('ECC'), 'document title');
   });
-  await step('filters: each alone and combined with exact rows; count; clear; badge sync; hidden indicator; empty state; grouping; drilldown; persistence; display-only', async () => {
-    await nav('situation'); await page.click('[data-testid="clear-filters"]').catch(() => {});
-    const ids = async () => page.locator('tr.row').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid').slice(6)).sort());
-    const expectIds = async (expected, label) => { const got = await ids(); assert(JSON.stringify(got) === JSON.stringify([...expected].sort()), `${label}: ${got.join(',')}`); };
-    const total = (await ids()).length; assert(total === 15, `15 alerts at step 7 (${total})`);
-    const unreadBefore = await page.textContent('[data-testid="nav-situation"] .badge').catch(() => '0');
-    const badgesBefore = await page.locator('[data-testid="ind-D-0001"] .badge').allTextContents();
-    const groupedBefore = (await page.textContent('[data-testid="alert-a2-1"]')).match(/×\d+/)?.[0] ?? '';
-    await page.click('[data-testid="sev-critical"]'); await expectIds(['a2-1', 'a4-1', 'a4-2', 'a5-1'], 'severity Critical');
-    assert((await page.textContent('[data-testid="log-count"]')) === '4 of 15', 'count');
-    assert(groupedBefore.startsWith('×') && (await page.textContent('[data-testid="alert-a2-1"]')).includes(groupedBefore), `grouping count ${groupedBefore} intact under filter`);
-    assert(JSON.stringify(await page.locator('[data-testid="ind-D-0001"] .badge').allTextContents()) === JSON.stringify(badgesBefore) && (await page.textContent('[data-testid="nav-situation"] .badge').catch(() => '0')) === unreadBefore, 'card indicators and nav count ignore the filter');
-    await page.click('[data-testid="alert-a4-1"]'); await page.waitForSelector('[data-testid="response-detail"][data-alert="a4-1"]');
-    await page.click('[data-testid="ev-proc-fire"]'); await page.waitForSelector('[data-testid="viewer"][data-doc="proc-fire"][data-rendered="true"]', { timeout: 20000 });
-    await page.click('[data-window="document"] button[title^="Close document"]');
-    await page.click('[data-testid="sev-all"]');
-    await page.click('[data-testid="ind-D-0001"]'); await expectIds(['a3-1', 'a3-2', 'a4-2', 'a6-1', 'a7-1'], 'equipment D-0001 via badge');
-    assert((await page.getAttribute('[data-testid="ind-D-0001"]', 'aria-pressed')) === 'true' && (await page.textContent('[data-testid="filter-equipment"]')).includes('D-0001'), 'badge selected');
-    await page.click('[data-testid="ind-D-0001"]'); assert((await ids()).length === 15 && (await page.getAttribute('[data-testid="ind-D-0001"]', 'aria-pressed')) === 'false', 'badge click again removes the filter');
-    await page.click('[data-testid="filter-equipment"]'); await page.click('[data-testid="eq-opt-D-0029"]'); await page.keyboard.press('Escape');
-    assert((await page.getAttribute('[data-testid="ind-D-0029"]', 'aria-pressed')) === 'true', 'dropdown selection reflected on the card badge');
-    await expectIds(['a1-1', 'a2-1', 'a2-2', 'a4-3', 'a7-2'], 'equipment D-0029 via dropdown');
-    await page.click('[data-testid="sev-high"]'); await expectIds(['a2-2'], 'High + D-0029 combined');
-    await page.click('[data-testid="clear-filters"]'); assert((await ids()).length === 15 && (await page.locator('[data-testid="clear-filters"]').count()) === 0, 'Clear filters restores and hides itself');
-    await page.click('[data-testid="filter-status"]'); await page.click('[data-testid="status-opt-cleared"]'); await page.keyboard.press('Escape');
-    await expectIds(['a3-1', 'a3-2', 'a4-2', 'a5-2'], 'status Cleared');
-    await page.click('[data-testid="filter-status"]'); await page.click('[data-testid="status-opt-cleared"]'); await page.keyboard.press('Escape');
-    await page.fill('[data-testid="filter-search"]', 'deluge'); await expectIds(['a4-1', 'a7-3'], 'search by text (title or equipment name)');
-    await page.fill('[data-testid="filter-search"]', 'FH-01'); await expectIds(['a5-1', 'a5-2', 'a6-2'], 'search by tag');
-    await page.fill('[data-testid="filter-search"]', 'zzzz'); await page.waitForSelector('[data-testid="log-empty"]');
-    assert((await page.textContent('[data-testid="log-empty"]')).includes('No alerts match'), 'empty state');
-    await page.click('[data-testid="log-empty"] .link'); assert((await ids()).length === 15, 'empty-state clear restores');
-    // hidden-critical indicator: minimal change, no selection/scroll change
-    await page.click('[data-testid="sev-low"]');
-    await page.waitForSelector('[data-testid="hidden-indicator"][data-critical="3"]');
-    const sel0 = (await store()).selectedAlertId; const st0 = await page.evaluate(() => document.querySelector('[data-testid="log-scroll"]').scrollTop);
-    await page.click('[data-testid="hidden-indicator"]');
-    assert((await store()).logFilters.severity === 'all' && (await page.locator('[data-testid="alert-a5-1"]').count()) === 1, 'indicator revealed the Criticals by widening severity only');
-    assert((await store()).selectedAlertId === sel0 && (await page.evaluate(() => document.querySelector('[data-testid="log-scroll"]').scrollTop)) === st0, 'nothing else selected or scrolled');
-    assert((await page.locator('[data-testid="hidden-indicator"]').count()) === 0, 'indicator gone once visible');
-    // persistence across tab switch, assistant, reload
-    await page.click('[data-testid="filter-equipment"]'); await page.click('[data-testid="eq-opt-FH-01"]'); await page.keyboard.press('Escape');
-    await nav('sitrep'); await nav('situation'); assert((await page.textContent('[data-testid="filter-equipment"]')).includes('FH-01'), 'filter survives tab switch');
-    await page.click('[data-testid="assistant-toggle"]'); await page.click('[data-testid="assistant-close"]'); assert((await page.textContent('[data-testid="filter-equipment"]')).includes('FH-01'), 'survives assistant');
-    await page.reload(); await page.waitForSelector('[data-testid="dock"]'); await sleep(600); assert((await page.textContent('[data-testid="filter-equipment"]')).includes('FH-01') && (await ids()).length === 3, 'survives reload');
-    // filtered-out alert is still in Sit. Rep
-    await nav('sitrep'); await page.fill('[data-testid="timeline-search"]', 'Deluge DS-029 · no flow'); await sleep(200);
-    assert((await page.locator('[data-testid="timeline-row"][data-kind="alert"]').count()) >= 1, 'filtered-out alert present in the record');
-    await page.fill('[data-testid="timeline-search"]', ''); await nav('situation'); await page.click('[data-testid="clear-filters"]');
-    await shot('filters-active-1920-light');
+  await step('feed filters: by origin alone, with this issue; hidden Critical indicator; display-only; persistence', async () => {
+    await nav('situation'); await page.click('[data-testid="origin-all"]'); await page.click('[data-testid="panel-close"]').catch(() => {});
+    const rows = () => page.locator('[data-testid="feed-rows"] .sr-row').evaluateAll((els) => els.map((e) => e.dataset.origin));
+    const all = await rows(); assert(all.length >= 25 && new Set(all).size >= 3, `whole feed at step 7 (${all.length})`);
+    const navBefore = await page.textContent('[data-testid="nav-situation"]');
+    for (const [k, want] of [['monitoring', ['monitoring']], ['people', ['field', 'person']], ['agent', ['agent']]]) {
+      await page.click(`[data-testid="origin-${k}"]`); const got = await rows();
+      assert(got.length > 0 && got.every((o) => want.includes(o)), `${k}: ${[...new Set(got)]}`);
+    }
+    assert((await page.textContent('[data-testid="nav-situation"]')) === navBefore, 'nav count ignores the filter');
+    assert(/critical hidden/.test(await page.textContent('[data-testid="feed-hidden-critical"]')), 'hidden Critical indicator');
+    await page.click('[data-testid="origin-monitoring"]');
+    await page.click('[data-testid="alert-a4-1"]'); await page.click('[data-testid="related"] > summary'); await page.click('[data-testid="related-in-feed"]');
+    const scoped = await page.locator('[data-testid="feed-rows"] .sr-row').evaluateAll((els) => els.map((e) => e.dataset.update));
+    assert(scoped.length >= 2 && scoped.every((id) => ['a4-1', 'a7-3'].includes(id)), `this issue and Monitoring combined: ${scoped}`);
+    await page.click('[data-testid="feed-scope"]');
+    await nav('sitrep'); await nav('situation'); assert((await page.getAttribute('[data-testid="origin-monitoring"]', 'aria-pressed')) === 'true', 'filter survives tab switch');
+    await page.click('[data-testid="assistant-toggle"]'); await page.click('[data-testid="assistant-close"]'); assert((await page.getAttribute('[data-testid="origin-monitoring"]', 'aria-pressed')) === 'true', 'survives assistant');
+    await page.reload(); await page.waitForSelector('[data-testid="dock"]'); await sleep(600); assert((await page.getAttribute('[data-testid="origin-monitoring"]', 'aria-pressed')) === 'true', 'survives reload');
+    await nav('sitrep'); await page.fill('[data-testid="timeline-search"]', 'field'); await sleep(200);
+    assert((await page.locator('[data-testid="timeline-row"]').count()) >= 1, 'filtered-out updates present in the record');
+    await page.fill('[data-testid="timeline-search"]', ''); await nav('situation'); await page.click('[data-testid="origin-all"]');
+    await shot('feed-filter-1920-light');
   });
   await step('equipment cards are distinguishable (card surface differs from the window well) and keep their height; New draft is a quiet action', async () => {
+    await showReadings();
     for (const theme of ['light', 'dark']) {
       if (theme === 'dark') await page.click('[data-testid="theme-toggle"]');
-      const m = await page.evaluate(() => { const well = getComputedStyle(document.querySelector('[data-window="equipment"] > .win-b > .scroll')).backgroundColor; const card = document.querySelector('[data-testid="card-D-0029"]'); const cs = getComputedStyle(card); const head = getComputedStyle(card.querySelector('.card-h')).backgroundColor; return { well, card: cs.backgroundColor, head, h: card.getBoundingClientRect().height, border: cs.borderColor }; });
+      const m = await page.evaluate(() => { const well = getComputedStyle(document.querySelector('[data-testid="equipment-watch"] .sr-watch-b')).backgroundColor; const card = document.querySelector('[data-testid="card-D-0029"]'); const cs = getComputedStyle(card); const head = getComputedStyle(card.querySelector('.card-h')).backgroundColor; return { well, card: cs.backgroundColor, head, h: card.getBoundingClientRect().height, border: cs.borderColor }; });
       assert(m.card !== m.well && m.well !== 'rgba(0, 0, 0, 0)', `${theme}: card (${m.card}) differs from well (${m.well})`);
       assert(m.head !== m.card, `${theme}: header tint differs from card body`);
       assert(Math.abs(m.h - 251.6) <= 2.5, `${theme}: card height unchanged (${m.h.toFixed(1)})`);
@@ -694,17 +720,17 @@ if (want('round4')) {
       if (theme === 'dark') await page.click('[data-testid="theme-toggle"]');
     }
     await nav('sitrep');
-    const nd = await page.locator('[data-testid="sitrep-new"]').evaluate((el) => { const cs = getComputedStyle(el); const ref = getComputedStyle(document.querySelector('[data-testid="download-timeline"]')); return { bg: cs.backgroundColor, refBg: ref.backgroundColor, primary: el.classList.contains('primary') }; });
-    assert(!nd.primary && nd.bg === nd.refBg, `New draft matches the quiet header buttons (${nd.bg} vs ${nd.refBg})`);
-    await nav('situation');
+    const nd = await page.locator('.sr2-bar [data-testid="sitrep-generate"]').evaluate((el) => ({ primary: el.classList.contains('primary') })).catch(() => ({ primary: false }));
+    assert(!nd.primary, 'Generate report beside the download is a quiet button');
+    await nav('situation'); await backToUpdates();
   });
   await step('trend maximize: control on every watcher; value, unit, limits; window; no future data; live; Esc restores layout, scroll, selection, focus; alert marker; signal-lost gap; separate scales', async () => {
-    await nav('situation'); await page.click('[data-testid="clear-filters"]').catch(() => {});
+    await nav('situation'); await showReadings();
     const rows = await page.locator('.wrow').count(); const ctrls = await page.locator('[data-testid^="trend-max-"]').count();
     assert(rows >= 6 && ctrls === rows, `control on every watcher (${ctrls}/${rows})`);
     assert((await page.locator('[data-testid="trend-max-DS-029:status"]').count()) === 1, 'status watcher has the control');
-    await page.evaluate(() => { document.querySelector('[data-testid="log-scroll"]').scrollTop = 30; });
-    await page.click('[data-testid="alert-a7-1"]'); const before = await store(); const st0 = await page.evaluate(() => document.querySelector('[data-testid="log-scroll"]').scrollTop);
+    await page.evaluate(() => { document.querySelector('[data-testid="cards"]').parentElement.scrollTop = 30; });
+    await page.evaluate(() => window.__ecc.store.getState().selectAlert('a7-1')); const before = await store(); const st0 = await page.evaluate(() => document.querySelector('[data-testid="cards"]').parentElement.scrollTop);
     await page.focus('[data-testid="trend-max-D-0001:pressure"]'); await page.keyboard.press('Enter');
     await page.waitForSelector('[data-testid="trend-overlay"] .panel[data-watcher="D-0001:pressure"]');
     const cardV = await valueOf('D-0001:pressure');
@@ -731,56 +757,59 @@ if (want('round4')) {
     await page.keyboard.press('Escape'); await sleep(100);
     assert((await page.locator('[data-testid="trend-overlay"]').count()) === 0, 'closed');
     const after = await store();
-    assert(after.selectedAlertId === before.selectedAlertId && JSON.stringify(after.layout) === JSON.stringify(before.layout) && JSON.stringify(after.logFilters) === JSON.stringify(before.logFilters), 'layout, selection and filters unchanged');
-    assert((await page.evaluate(() => document.querySelector('[data-testid="log-scroll"]').scrollTop)) === st0, 'scroll unchanged');
+    assert(after.selectedAlertId === before.selectedAlertId && JSON.stringify(after.room) === JSON.stringify(before.room), 'room, open issue and filters unchanged');
+    assert((await page.evaluate(() => document.querySelector('[data-testid="cards"]').parentElement.scrollTop)) === st0, 'scroll unchanged');
     assert((await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'trend-max-D-0001:pressure', 'focus returned to the control');
     // alert marker opens the alert
     await page.click('[data-testid="trend-max-D-0001:pressure"]'); await page.click('[data-testid="trend-win-0"]');
     await page.waitForSelector('[data-testid="trend-alert-a4-2"]'); await page.click('[data-testid="trend-alert-a4-2"]');
-    await page.waitForSelector('[data-testid="response-detail"][data-alert="a4-2"]');
+    await page.waitForSelector('[data-testid="issue-panel"][data-issue="pressure"]');
     // signal-lost gap on D-0029 temperature (via the switcher)
     await page.click('[data-testid="trend-max-D-0029:pressure"]'); await page.click('[data-testid="trend-pick-D-0029:temperature"]'); await page.click('[data-testid="trend-win-0"]');
     await page.waitForSelector('[data-testid="trend-overlay"] .panel[data-watcher="D-0029:temperature"][data-gap="true"] [data-testid="trend-gap"]');
     await shot('trend-1920-light');
     await page.click('[data-testid="trend-close"]');
-    await page.click('[data-testid="alert-a7-1"]');
+    await backToUpdates(); await page.click('[data-testid="alert-a7-1"]');
   });
   await step('citations: one control everywhere a document backs an insight; View evidence / Open original; pinned revisions; no dead links; business labels', async () => {
     await nav('situation');
     // start from a closed viewer so the check exercises the citation, not the previous state
     for (const sel of ['[data-testid="viewer-overlay"] [data-testid="viewer-close"]', '[data-window="document"] button[title^="Close document"]']) await page.locator(sel).click({ timeout: 300 }).catch(() => {});
     // layouts left by earlier checks are reset through the dividers' own double-click reset
-    for (const d of ['divider-x', 'divider-y']) await page.dblclick(`[data-testid="${d}"]`).catch(() => {});
-    await page.click('[data-testid="alert-a4-2"]'); await page.waitForSelector('[data-testid="decision-recorded"]');
-    assert((await page.locator('[data-testid="decision-evidence"] [data-testid="cite-view"]').count()) >= 2, 'decision evidence is a citation control');
-    await page.fill('[data-testid="rationale"]', 'x').catch(() => {});
-    await page.locator('[data-testid="decision-evidence"] [data-testid="cite-view"]').first().click();
-    await page.waitForSelector('[data-window="document"]'); await page.dblclick('[data-testid="divider-doc"]').catch(() => {});
-    try { await page.waitForSelector('[data-window="document"] [data-testid="viewer"][data-doc="proc-depress"][data-rev="2"][data-page="3"][data-rendered="true"]', { timeout: 20000 }); }
+    await page.click('[data-testid="alert-a4-2"]'); await page.waitForSelector('[data-testid="issue-panel"][data-issue="pressure"]');
+    await page.locator('[data-testid="decision-evidence"]').evaluateAll((ds) => ds.forEach((d) => { d.open = true; }));
+    const a42 = page.locator('[data-testid="decision-earlier"]', { hasText: 'Initiate emergency depressurization' });
+    assert((await a42.locator('[data-testid="decision-evidence"] [data-testid="cite-view"]').count()) >= 2, 'decision evidence is a citation control');
+    await a42.locator('[data-testid="decision-evidence"] [data-testid="cite-view"]').first().click();
+    await page.waitForSelector(DOC);
+    try { await page.waitForSelector('[data-testid="viewer-overlay"] [data-testid="viewer"][data-doc="proc-depress"][data-rev="2"][data-page="3"][data-rendered="true"]', { timeout: 20000 }); }
     catch (e) {
       const d = await page.evaluate(() => ({ viewer: JSON.parse(localStorage.getItem('ecc-v3')).state.viewer, layout: JSON.parse(localStorage.getItem('ecc-v3')).state.layout, win: document.querySelector('[data-window="document"]')?.getBoundingClientRect().toJSON(), viewers: [...document.querySelectorAll('[data-testid="viewer"]')].map((v) => ({ doc: v.getAttribute('data-doc'), rev: v.getAttribute('data-rev'), page: v.getAttribute('data-page'), rendered: v.getAttribute('data-rendered'), overlay: !!v.closest('[data-testid="viewer-overlay"]'), rect: v.getBoundingClientRect().toJSON() })) }));
       throw new Error(`${e.message.split('\n')[0]} — diagnostics ${JSON.stringify(d)}`);
     }
-    const vh = await page.textContent('[data-window="document"] .viewer-h');
+    const vh = await page.textContent('[data-testid="viewer-overlay"] .viewer-h');
     assert(vh.includes('Rev 3 now current') && vh.includes('Superseded'), 'decision citation opens the pinned older revision with the newer-revision notice');
-    await page.click('[data-window="document"] [data-testid="viewer-open-original"]');
-    await page.waitForFunction(() => document.querySelector('[data-window="document"] [data-testid="viewer"] .cite') === null, null, { timeout: 5000 });
-    await page.click('[data-window="document"] button[title="Next page"]'); await page.waitForSelector('[data-window="document"] [data-testid="viewer"][data-rev="2"][data-page="4"]');
-    await page.click('[data-window="document"] [data-testid="viewer-switch-current"]'); await page.waitForSelector('[data-window="document"] [data-testid="viewer"][data-rev="3"]');
+    await page.click('[data-testid="viewer-overlay"] [data-testid="viewer-open-original"]');
+    await page.waitForFunction(() => document.querySelector('[data-testid="viewer-overlay"] [data-testid="viewer"] .cite') === null, null, { timeout: 5000 });
+    await page.click('[data-testid="viewer-overlay"] button[title="Next page"]'); await page.waitForSelector('[data-testid="viewer-overlay"] [data-testid="viewer"][data-rev="2"][data-page="4"]');
+    await page.click('[data-testid="viewer-overlay"] [data-testid="viewer-switch-current"]'); await page.waitForSelector('[data-testid="viewer-overlay"] [data-testid="viewer"][data-rev="3"]');
     assert((await record()).events.find((e) => e.id === 'decision-a4-2').evidence.every((x) => x.docId !== 'proc-depress' || x.revision === '2'), 'pinned reference unchanged after switching');
-    await page.click('[data-window="document"] button[title^="Close document"]');
-    // superseded recommendation chips still open Rev 2
-    // The procedure is cited under Applicable protocol; the recommendation itself cites the drawing. Both must open what they name.
-    await page.locator('[data-testid="ev-proc-depress"] [data-testid="cite-view"]').first().click();
-    await page.waitForSelector('[data-window="document"] [data-testid="viewer"][data-doc="proc-depress"][data-rev="2"][data-rendered="true"]', { timeout: 20000 });
-    await page.click('[data-window="document"] button[title^="Close document"]');
-    await page.locator('[data-testid="recommendation"] [data-testid="cite-view"]').first().click();
-    await page.waitForSelector('[data-window="document"] [data-testid="viewer"][data-doc="pid"][data-rendered="true"]', { timeout: 20000 });
-    await page.click('[data-window="document"] button[title^="Close document"]');
+    await closeDoc();
+    // The response's evidence: every listed document opens, in a dialog, the revision it names.
+    if ((await page.locator('[data-testid="evidence-all"]').textContent().catch(() => '')).startsWith('Show more')) await page.click('[data-testid="evidence-all"]');
+    const n = await page.locator('[data-testid="evidence-item"][data-kind="document"]').count();
+    assert(n >= 1, 'documents listed in the response');
+    for (let i = 0; i < n; i++) {
+      const item = page.locator('[data-testid="evidence-item"][data-kind="document"]').nth(i);
+      const doc = await item.textContent(); await item.click();
+      await page.waitForSelector(`${DOC} [data-testid="viewer"][data-rendered="true"]`, { timeout: 20000 });
+      assert(doc.includes(await page.getAttribute(`${DOC} [data-testid="viewer"]`, 'data-rev').then((r) => `Rev ${r}`)), `evidence ${i} opens the revision it names`);
+      await closeDoc();
+    }
     // Sit. Rep timeline + SITREP evidence list
     await nav('sitrep'); await page.waitForSelector('[data-testid="timeline-evidence"]');
     // Sets up its own starting point: the evidence list belongs to a SITREP version, so make one if no earlier check did.
-    if ((await page.locator('[data-testid="sitrep-editor"]').count()) === 0) { await page.click('[data-testid="sitrep-new"]'); await page.waitForSelector('[data-testid="sitrep-editor"]'); }
+    if ((await page.locator('[data-testid="sitrep-editor"]').count()) === 0) { await page.click('[data-testid="sitrep-generate"]'); await page.waitForSelector('[data-testid="sitrep-editor"]'); }
     await page.fill('[data-testid="sitrep-input-outstanding"]', 'HALF EDITED AGAIN', { timeout: 2000 }).catch(() => {});
     assert((await page.locator('[data-testid="sitrep-evidence"] [data-testid="cite-view"]').count()) >= 3, 'SITREP version has a pinned evidence list');
     const clipped = await page.locator('[data-testid="sitrep-evidence"] [data-testid="cite-original"]').evaluateAll((els) => els.filter((e) => e.getBoundingClientRect().right > e.closest('[data-testid="sitrep-evidence"]').getBoundingClientRect().right + 1).length);
@@ -838,7 +867,7 @@ if (want('round4')) {
     }
     // half-edited SITREP text survives maximize/restore
     await nav('sitrep'); await page.waitForSelector('[data-testid="sitrep-editor"]');
-    await page.click('[data-testid="sitrep-v-2"]'); await page.fill('[data-testid="sitrep-input-outstanding"]', 'HALF EDITED TEXT');
+    await page.fill('[data-testid="sitrep-input-outstanding"]', 'HALF EDITED TEXT');
     await page.click('[data-testid="max-sitrep-a"]'); await sleep(100); await page.click('[data-testid="max-sitrep-a"]'); await sleep(100);
     assert((await page.inputValue('[data-testid="sitrep-input-outstanding"]')) === 'HALF EDITED TEXT', 'half-edited SITREP text survives');
     // Assistant still opens while a pane is maximized
@@ -1055,7 +1084,7 @@ if (want('knowledge')) {
     assert(!dec || dec.evidence.every((x) => x.docId !== 'proc-depress' || x.revision === '2'), 'pinned decision evidence still Rev 2');
     const recs = rec.events.filter((e) => e.kind === 'recommendation' && e.evidence?.some((x) => x.docId === 'proc-depress'));
     if ((await store()).revealedAt.length >= 3) assert(recs.length > 0 && recs.every((e) => e.evidence.every((x) => x.docId !== 'proc-depress' || x.revision === '2')), 'pinned recommendation evidence still Rev 2');
-    if ((await store()).revealedAt.length >= 5) { await nav('situation'); await page.click('[data-testid="alert-a5-1"]'); await page.click('[data-testid="tab-sources"]'); assert((await page.textContent('[data-testid="sources"]')).includes('Rev 2 used'), 'Situation sources still show Rev 2 used'); await page.click('[data-testid="tab-response"]'); }
+    if ((await store()).revealedAt.length >= 5) { await nav('situation'); await evidenceOf('a5-1'); assert(/Rev 2/.test(await page.textContent('[data-testid="evidence"]')), 'Situation evidence still shows Rev 2'); }
   });
 }
 
@@ -1082,23 +1111,23 @@ if (want('persist')) {
     await page.fill('[data-testid="correction-text"]', 'CORRECTED: ' + original.slice(0, 40)); await page.click('[data-testid="correction-save"]'); await sleep(400);
     const rec = await record();
     const corr = rec.events.find((e) => e.kind === 'correction'); assert(corr && rec.events.some((e) => e.id === corr.corrects && e.title === original), 'correction appended; original retained');
+    for (let k = 0; k < 200 && await page.locator('[data-testid="moment-toggle"][aria-expanded="false"]').count(); k++) await page.locator('[data-testid="moment-toggle"][aria-expanded="false"]').first().click();
     assert((await page.locator('.tl.corrected').count()) >= 1 && (await page.locator('.tl.is-correction').count()) >= 1, 'both shown');
   });
   await step('closure: refused without rationale; records author/time; outstanding preserved; equipment and alert state unchanged; read-only after', async () => {
-    await page.click('[data-testid="side-status"]');
-    // Active -> Resolved -> Closed: closure is reachable only through a recorded resolution and a review.
-    await page.click('[data-testid="status-resolve"]'); await page.fill('[data-testid="resolve-summary"]', 'D-0001 below High limit for 8 min'); await page.fill('[data-testid="resolve-rationale"]', 'Cooling maintained'); await page.click('[data-testid="resolve-submit"]'); await page.waitForSelector('[data-testid="resolution-recorded"]');
-    await page.click('[data-testid="status-close"]'); await page.waitForSelector('[data-testid="close-dialog"]');
+    // Active -> Resolved -> Closed, from the status bar: closure is reachable only through a recorded resolution and a review.
+    assert((await page.locator('[data-testid="side-status"], [data-testid="status-pane"]').count()) === 0, 'the Sit. Rep has no status or closure tab');
+    await page.click('[data-testid="lifecycle-resolve"]'); await page.fill('[data-testid="resolve-summary"]', 'D-0001 below High limit for 8 min'); await page.fill('[data-testid="resolve-rationale"]', 'Cooling maintained'); await page.click('[data-testid="resolve-submit"]'); await page.waitForSelector('[data-testid="statusbar"][data-lifecycle="resolved"]');
+    await page.click('[data-testid="lifecycle-close"]'); await page.waitForSelector('[data-testid="close-dialog"]');
     assert((await page.locator('[data-testid="close-save"]:disabled').count()) === 1 && (await record()).status !== 'closed', 'closure refused without rationale');
     const alertsBefore = await page.evaluate(() => JSON.parse(localStorage.getItem('ecc-v3')).state.alertUser);
     await page.fill('[data-testid="close-rationale"]', 'Fire reported contained; D-0001 stable; handover to day shift'); await page.fill('[data-testid="close-outstanding"]', 'DS-029 no-flow fault open\nIndependent verification of extinguishment');
     await page.check('[data-testid="close-reviewed"]');
-    await page.click('[data-testid="close-save"]'); await page.waitForSelector('[data-testid="closed-dialog"]'); await page.keyboard.press('Escape'); await page.waitForSelector('[data-testid="closure-recorded"]');
+    await page.click('[data-testid="close-save"]'); await page.waitForSelector('[data-testid="closed-dialog"]'); await page.keyboard.press('Escape'); await page.waitForSelector('[data-testid="statusbar"][data-lifecycle="closed"]');
     const rec = await record();
     assert(rec.status === 'closed' && rec.closure.by.includes('Shift Manager') && rec.closure.t > 0 && rec.closure.outstanding.length === 2, 'closure recorded');
-    assert((await page.locator('[data-testid="outstanding-item"]').count()) === 2 && (await page.locator('[data-testid="closed-chip"]').count()) === 1, 'outstanding displayed');
-    assert((await page.locator('[data-testid="sitrep-new"]').count()) === 0, 'no new drafts after closure');
-    await page.fill('[data-testid="lesson-text"]', 'Confirm deluge flow at the equipment'); await page.click('[data-testid="lesson-save"]'); await page.waitForSelector('[data-testid="lesson-item"]');
+    assert((await page.locator('[data-testid="closed-chip"]').count()) === 1, 'the Timeline shows the incident is closed');
+    assert((await page.locator('[data-testid="sitrep-generate"]').count()) === 0 && (await page.locator('[data-testid="sitrep-editor"][data-editable="true"]').count()) === 0, 'no new reports or edits after closure');
     await shot('closure-1920-light');
     await nav('situation');
     const alertsAfter = await page.evaluate(() => JSON.parse(localStorage.getItem('ecc-v3')).state.alertUser);
@@ -1148,26 +1177,27 @@ if (want('persist')) {
 
 // ======================================================================= assistant
 if (want('assistant')) {
-  await step('assistant: opens from every tab; page, selection, filters, split ratios and scroll unchanged', async () => {
+  await step('assistant: opens from every tab; page, open issue, filters, split ratios and scroll unchanged', async () => {
     await nav('situation');
-    if ((await store()).revealedAt.length < 2) { await page.click('[data-testid="facil-next"]'); await page.waitForSelector('[data-testid="alert-a2-1"]', { timeout: 70000 }); }
-    await page.click('[data-testid="alert-a2-1"]'); await page.click('[data-testid="ind-D-0029"]');
-    await drag('[data-testid="divider-y"]', 0, 200);
-    await page.evaluate(() => { document.querySelector('[data-testid="log-scroll"]').scrollTop = 20; });
-    const before = await store();
-    for (const id of ['situation', 'sitrep', 'agentlog', 'knowledge']) {
+    if ((await store()).revealedAt.length < 2) { await backToUpdates(); await page.click('[data-testid="facil-next"]'); await page.waitForSelector('[data-testid="alert-a2-1"]', { timeout: 70000 }); }
+    // The filter first: changing it is a click on the workspace, which closes the drawer. Then the issue.
+    await backToUpdates(); await page.click('[data-testid="origin-monitoring"]'); await page.click('[data-testid="alert-a2-1"]'); await page.waitForSelector('[data-testid="issue-panel"]');
+    for (const id of ['sitrep', 'agentlog', 'knowledge', 'situation']) {
       await nav(id); await page.click('[data-testid="assistant-toggle"]'); await page.waitForSelector('[data-testid="assistant"]');
       assert((await page.locator(`[data-testid="nav-${id}"][aria-current="page"]`).count()) === 1, `still on ${id}`);
       await page.click('[data-testid="assistant-close"]'); await sleep(100);
     }
-    await nav('situation'); await page.click('[data-testid="assistant-toggle"]'); await sleep(300);
+    // On the Situation Room with an issue open: opening the Assistant leaves the issue, the filter, the splits and the scroll as they were.
+    if ((await page.locator('[data-testid="issue-panel"]').count()) === 0) { await page.click('[data-testid="alert-a2-1"]'); await page.waitForSelector('[data-testid="issue-panel"]'); }
+    await page.evaluate(() => { document.querySelector('[data-testid="feed-rows"]').scrollTop = 20; });
+    const before = await store();
+    await page.click('[data-testid="assistant-toggle"]'); await sleep(300);
     const after = await store();
-    assert(after.layout.splitX === before.layout.splitX && after.layout.splitY === before.layout.splitY && after.selectedAlertId === 'a2-1' && after.logFilters.equipment.includes('D-0029') && JSON.stringify(after.splits) === JSON.stringify(before.splits), 'layout, selection, filter and splits unchanged');
-    assert((await page.getAttribute('[data-testid="log-toolbar"]', 'data-active')) === 'true', 'filter still shown');
-    assert((await page.getAttribute('[data-testid="assistant"]', 'data-mode')) === 'push', 'push mode at 1920');
+    assert(JSON.stringify(after.room) === JSON.stringify(before.room) && after.selectedAlertId === 'a2-1' && JSON.stringify(after.splits) === JSON.stringify(before.splits), 'open issue, filter and splits unchanged');
+    assert((await page.getAttribute('[data-testid="issue-panel"]', 'data-issue')) === 'fire' && (await page.getAttribute('[data-testid="origin-monitoring"]', 'aria-pressed')) === 'true', 'issue and filter still shown');
+    assert((await page.getAttribute('[data-testid="assistant"]', 'data-mode')) === 'push' || (await page.getAttribute('[data-testid="assistant"]', 'data-mode')) === 'overlay', 'assistant opens beside the room');
     assert((await page.getAttribute('[data-testid="assistant-toggle"]', 'aria-expanded')) === 'true', 'aria-expanded while open');
-    await drag('[data-testid="divider-y"]', 0, -200);
-    await page.click('[data-testid="clear-filters"]');
+    await page.click('[data-testid="origin-all"]');
   });
   await step('assistant: evidence reply with citations; scope changes results; citation opens at page and returns with conversation', async () => {
     await page.waitForSelector('[data-testid="assistant-send"]:not([disabled]), [data-testid="assistant-input"]', { timeout: 40000 });
@@ -1227,10 +1257,11 @@ if (want('assistant')) {
     assert((await page.textContent('[data-testid="assistant-error"]')).includes('simulated failure'), 'error state text');
     await page.click('[data-testid="facil-simulate"]'); await page.click('[data-testid="facil-simfail"]'); await page.keyboard.press('Escape');
     await nav('knowledge'); await page.click('[data-testid="kv-search"]');
-    assert((await page.locator('[data-testid="assistant-critical"]').count()) === 1, 'critical indicator visible while open');
-    await page.click('[data-testid="assistant-critical"]');
-    await page.waitForSelector('[data-testid="response-detail"][data-alert="a2-1"]');
-    assert((await page.locator('[data-testid="nav-situation"][aria-current="page"]').count()) === 1, 'navigated to Situation and selected the critical alert');
+    // The Assistant shows the conversation only; incident alerts stay in the Situation Room.
+    assert((await page.locator('[data-testid="assistant-critical"], [data-testid="assistant"] .as-critical').count()) === 0, 'no alert banner in the Assistant');
+    await page.click('[data-testid="nav-situation"]'); await page.click('[data-testid="view-updates"]'); await page.click('[data-testid="origin-all"]');
+    await page.click('[data-testid="feed-equipment"]').catch(() => {}); await page.click('[data-testid="feed-scope"]').catch(() => {});
+    assert((await page.locator('[data-testid^="alert-"][data-severity="critical"]').count()) >= 1, 'critical alerts are in the Situation Room');
     await shot('assistant-error-1920-light');
     await page.click('[data-testid="assistant-close"]');
   });

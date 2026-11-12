@@ -3,8 +3,10 @@
 import { PdfDoc, download } from '../lib/pdfwrite';
 import { dateTime, elapsedParts, pad2 } from '../lib/time';
 import { CATEGORY, decisionNote, timeline } from './timeline';
+import { followThroughLine, followThroughOf } from '../investigate/followThrough';
 import type { DecisionEvent, MeasurementEvent } from './types';
 import type { IncidentRecord, PinnedEvidence, ReportVersion } from './types';
+import { BASIS_LABEL, type Brief } from './story';
 
 const marker = (r: IncidentRecord) => `${r.mode === 'training' ? 'Training scenario' : 'Real incident'} · ${r.provenance === 'seed' ? 'illustrative fixture record, not an actual event' : 'illustrative data'} · browser-local prototype record`;
 const evidenceLine = (ev?: PinnedEvidence[]) => ev && ev.length ? `Evidence: ${ev.map((e) => `${e.number || e.title} Rev ${e.revision} p.${e.page} ${e.label}`).join('; ')}` : '';
@@ -26,7 +28,8 @@ export function timelineReportPdf(r: IncidentRecord, asOf: number): Blob {
     const note = e.kind === 'decision' ? decisionNote(r, e as DecisionEvent, asOf) : null;
     const changes = e.kind === 'measurement' ? ((e as MeasurementEvent).changes ?? []).join('; ') : '';
     const full = e.kind === 'measurement' ? `All values: ${(e as MeasurementEvent).values.map((v) => `${v.watcherId.replace(':', ' ')} ${v.value}${v.unit === 'status' ? '' : ` ${v.unit}`}`).join(', ')}` : '';
-    const sub = [e.detail, changes, full, e.by ? `By ${e.by}` : '', evidenceLine(e.evidence), note ? `[${note}]` : '', row.correctedBy ? `Corrected ${clk(row.correctedBy.t)}: ${row.correctedBy.title}` : '', e.corrects ? `Correction of an earlier entry (original retained)` : ''].filter(Boolean).join(' · ');
+    const inv = e.kind === 'observation' && e.meta?.investigationId ? r.investigations?.find((i) => i.id === e.meta!.investigationId) : undefined;
+    const sub = [e.detail, inv ? followThroughLine(inv) : '', changes, full, e.by ? `By ${e.by}` : '', evidenceLine(e.evidence), note ? `[${note}]` : '', row.correctedBy ? `Corrected ${clk(row.correctedBy.t)}: ${row.correctedBy.title}` : '', e.corrects ? `Correction of an earlier entry (original retained)` : ''].filter(Boolean).join(' · ');
     pdf.row(clk(e.t), CATEGORY[e.kind], e.title, sub || undefined);
   }
   if (r.lessons.length) { pdf.heading('Lessons learned'); for (const l of r.lessons) pdf.text(`• ${l.text}`, { gap: 1 }); }
@@ -34,17 +37,25 @@ export function timelineReportPdf(r: IncidentRecord, asOf: number): Blob {
   return pdf.build();
 }
 
+/** The Sit. Rep as a one-page briefing: title and as-of time, the assessment, then three sections of short bullets.
+ *  It prints the report exactly as the manager left it; lines starting with “•” or “-” are bullets. */
 export function sitrepPdf(r: IncidentRecord, v: ReportVersion): Blob {
-  const pdf = new PdfDoc({ title: `SITREP ${v.number} · ${r.id}`, subtitle: r.title, footer: `${r.id} · ${r.site} · SITREP ${v.number} · as of ${dateTime(v.asOf)} · ${v.status.toUpperCase()} · ${r.mode === 'training' ? 'TRAINING' : 'REAL'}`, marker: marker(r) });
-  pdf.text(`SITREP ${v.number}`, { size: 20, bold: true, gap: 2 });
-  pdf.text(`${r.id} · ${r.title}`, { size: 12, bold: true });
-  pdf.text(`${r.site} · ${r.mode === 'training' ? 'Training scenario' : 'Real incident'} · as of ${dateTime(v.asOf)} · version ${v.number} · ${v.status === 'approved' ? `Approved by ${v.approvedBy} at ${dateTime(v.approvedAt!)}` : v.status === 'review' ? 'In review — not approved' : 'Draft — not approved'}`, { size: 9.5, color: [0.3, 0.33, 0.4] });
-  pdf.text(`Point-in-time account: nothing after ${dateTime(v.asOf)} is included. Prepared by ${v.author}.`, { size: 9, color: [0.36, 0.39, 0.45], gap: 6 });
-  const S: [keyof typeof v.sections, string][] = [['situation', 'Situation'], ['response', 'Response'], ['decisions', 'Decisions'], ['outstanding', 'Outstanding concerns'], ['priorities', 'Priorities']];
-  for (const [k, label] of S) { pdf.heading(label, 2); pdf.text(v.sections[k] || '—'); }
-  const refs = r.events.filter((e) => e.t <= v.asOf && e.evidence?.length).flatMap((e) => e.evidence!);
-  const uniq = new Map<string, PinnedEvidence>(); for (const e of refs) uniq.set(`${e.docId}:${e.revision}:${e.page}`, e);
-  if (uniq.size) { pdf.heading('Document references (revision pinned at time of use)', 2); for (const e of uniq.values()) pdf.text(`${e.number || e.title} Rev ${e.revision} · p.${e.page} ${e.label} · ${e.title}`, { size: 9, gap: 1 }); }
+  // Reports approved under the earlier workflow keep saying so; everything else is simply the report as of its time.
+  const state = v.status === 'approved' && v.approvedBy ? ` · approved by ${String(v.approvedBy).split(' · ')[0]}` : '';
+  const pdf = new PdfDoc({ title: `Sit. Rep · ${r.id}`, subtitle: r.title, footer: `${r.id} · ${r.site} · Sit. Rep as of ${dateTime(v.asOf)}${state}`, marker: marker(r) });
+  pdf.text('SITUATION REPORT', { size: 8.5, bold: true, color: [0.36, 0.39, 0.45], gap: 2 });
+  pdf.text(r.title, { size: 18, bold: true, gap: 2 });
+  pdf.text(`As of ${dateTime(v.asOf)} · ${r.site} · ${r.mode === 'training' ? 'Training exercise' : 'Real incident'} · ${r.id}${state}`, { size: 9.5, color: [0.3, 0.33, 0.4], gap: 10 });
+  if (v.sections.situation.trim()) pdf.callout(v.sections.situation.trim());
+  const S: [keyof typeof v.sections, string][] = [['response', 'Current situation'], ['decisions', 'Actions and results'], ['outstanding', 'What needs attention']];
+  if (v.sections.priorities?.trim()) S.push(['priorities', 'Notes']);
+  for (const [k, label] of S) {
+    pdf.section(label);
+    const lines = (v.sections[k] || '—').split('\n').map((l) => l.trim()).filter(Boolean);
+    for (const l of lines) { if (/^[•\-*] /.test(l)) pdf.bullet(l.replace(/^[•\-*] /, ''), { size: 10 }); else pdf.text(l, { size: 10, gap: 4 }); }
+  }
+  pdf.space(10);
+  pdf.text('Reported items are not independently verified unless the text says verified. A recorded decision is not a completed action.', { size: 8, color: [0.42, 0.45, 0.5] });
   return pdf.build();
 }
 
@@ -67,9 +78,30 @@ export function incidentJson(r: IncidentRecord, exportedAt: number): Blob {
     closure: r.closure ?? null,
     lessons: r.lessons,
     corrections: r.events.filter((e) => e.kind === 'correction'),
+    incidentSeverity: r.severity ?? null,
+    severityHistory: r.severityHistory ?? [],
+    investigations: r.investigations ?? [],
+    observationFollowThrough: (r.investigations ?? []).map(followThroughOf),
     events: r.events,
   };
   return new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
 }
 
 export function downloadBlob(blob: Blob, name: string) { download(blob, name); }
+
+/** The Sit. Rep brief as a dated snapshot: the same text the preview and Copy show. */
+export function briefPdf(r: IncidentRecord, b: Brief): Blob {
+  const pdf = new PdfDoc({ title: `Situation report · ${r.id}`, subtitle: r.title, footer: `${r.id} · ${r.site} · situation report as of ${dateTime(b.asOf)} · ${r.mode === 'training' ? 'TRAINING' : 'REAL'}`, marker: marker(r) });
+  pdf.text('Situation report', { size: 20, bold: true, gap: 2 });
+  pdf.text(`${r.title}`, { size: 12, bold: true });
+  pdf.text(`${b.context} · as of ${dateTime(b.asOf)}`, { size: 9.5, color: [0.3, 0.33, 0.4], gap: 6 });
+  pdf.text(b.assessment, { size: 12, bold: true, gap: 6 });
+  pdf.heading('Current impact', 2); for (const l of b.impact) pdf.text(`• ${l.text}`, { gap: 1 });
+  pdf.heading('Actions and results', 2);
+  if (!b.actions.length) pdf.text('• No decision or action recorded yet');
+  for (const l of b.actions) { pdf.text(`• ${l.text}`, { bold: true, gap: 1 }); for (const s of l.sub ?? []) pdf.text(`${s.label}: ${s.text}${s.basis && s.label !== 'Decided' ? ` [${BASIS_LABEL[s.basis]}]` : ''}`, { indent: 12, size: 9.5, gap: 1 }); }
+  pdf.heading('Still needs attention', 2); for (const l of b.attention.length ? b.attention : [{ text: 'Nothing open' }]) pdf.text(`• ${l.text}`, { gap: 1 });
+  pdf.space(6);
+  pdf.text('Reported items are not independently verified unless marked Verified. A recorded decision is not a completed action. Built from the incident record; nothing after the as-of time is included.', { size: 8.5, color: [0.36, 0.39, 0.45] });
+  return pdf.build();
+}

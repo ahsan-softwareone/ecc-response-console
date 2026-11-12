@@ -5,7 +5,7 @@
 const PAGE_W = 595.28, PAGE_H = 841.89, MARGIN = 56;
 
 // WinAnsi mapping for the few non-ASCII characters the UI uses.
-const WINANSI: Record<string, number> = { '·': 0xb7, '—': 0x97, '–': 0x96, '°': 0xb0, '³': 0xb3, '’': 0x92, '‘': 0x91, '“': 0x93, '”': 0x94, '×': 0xd7, '…': 0x85, '§': 0xa7, '→': 0x2d, '²': 0xb2, '≤': 0x3c, '≥': 0x3e };
+const WINANSI: Record<string, number> = { '·': 0xb7, '—': 0x97, '–': 0x96, '°': 0xb0, '³': 0xb3, '’': 0x92, '‘': 0x91, '“': 0x93, '”': 0x94, '×': 0xd7, '…': 0x85, '§': 0xa7, '→': 0x2d, '²': 0xb2, '≤': 0x3c, '≥': 0x3e, '•': 0x95 };
 function enc(s: string): string {
   let out = '';
   for (const ch of s) {
@@ -23,7 +23,7 @@ function enc(s: string): string {
 const W: Record<string, number> = {};
 'abcdeghknopqsuvxyz'.split('').forEach((c) => (W[c] = 556)); 'fjtrI'.split('').forEach((c) => (W[c] = 278)); W.i = 222; W.l = 222; W.m = 833; W.w = 722;
 'ABEKPSVXY'.split('').forEach((c) => (W[c] = 667)); 'CDHNRUw'.split('').forEach((c) => (W[c] = 722)); 'GOQ'.split('').forEach((c) => (W[c] = 778)); W.M = 833; W.W = 944; W.F = 611; W.T = 611; W.Z = 611; W.L = 556; W.J = 500;
-'0123456789'.split('').forEach((c) => (W[c] = 556)); W[' '] = 278; W['.'] = 278; W[','] = 278; W[':'] = 278; W[';'] = 278; W['-'] = 333; W['('] = 333; W[')'] = 333; W['/'] = 278; W['·'] = 278;
+'0123456789'.split('').forEach((c) => (W[c] = 556)); W[' '] = 278; W['.'] = 278; W[','] = 278; W[':'] = 278; W[';'] = 278; W['-'] = 333; W['('] = 333; W[')'] = 333; W['/'] = 278; W['·'] = 278; W['•'] = 350;
 function width(s: string, size: number, bold = false) { let w = 0; for (const ch of s) w += (W[ch] ?? 600) * (bold ? 1.05 : 1); return (w / 1000) * size; }
 
 export interface PdfMeta { title: string; subtitle: string; footer: string; marker: string }
@@ -68,6 +68,36 @@ export class PdfDoc {
     }
     this.y -= opts.gap ?? 2;
   }
+  /** Word-wrap to a width without drawing. */
+  wrap(s: string, size: number, maxW: number, bold = false): string[] {
+    const lines: string[] = [];
+    for (const para of s.split('\n')) { let line = ''; for (const word of para.split(/\s+/)) { const cand = line ? `${line} ${word}` : word; if (width(cand, size, bold) > maxW && line) { lines.push(line); line = word; } else line = cand; } lines.push(line); }
+    return lines;
+  }
+  /** A bullet with a hanging indent: wrapped lines align with the text, not the bullet. */
+  bullet(s: string, opts: { size?: number; indent?: number; color?: [number, number, number]; gap?: number } = {}) {
+    const size = opts.size ?? 10, indent = opts.indent ?? 0, hang = 13;
+    const lines = this.wrap(s, size, PAGE_W - MARGIN * 2 - indent - hang);
+    const lh = size * 1.38;
+    this.ensure(lh * Math.min(lines.length, 2));
+    const [r, g, b] = opts.color ?? [0.08, 0.13, 0.18];
+    this.raw(`BT /F1 ${size} Tf 0.45 0.5 0.56 rg ${MARGIN + indent + 2} ${this.y - size} Td (${enc('•')}) Tj ET`);
+    for (const ln of lines) { this.ensure(lh); this.raw(`BT /F1 ${size} Tf ${r} ${g} ${b} rg ${MARGIN + indent + hang} ${this.y - size} Td (${enc(ln)}) Tj ET`); this.y -= lh; }
+    this.y -= opts.gap ?? 3;
+  }
+  /** Text on a light panel, for the one thing to read first. */
+  callout(s: string, opts: { size?: number; bold?: boolean } = {}) {
+    const size = opts.size ?? 11.5, bold = opts.bold ?? true, pad = 10;
+    const lines = this.wrap(s, size, PAGE_W - MARGIN * 2 - pad * 2, bold);
+    const lh = size * 1.4, h = lines.length * lh + pad * 2 - (lh - size);
+    this.ensure(h + 4);
+    this.raw(`0.945 0.953 0.965 rg ${MARGIN} ${this.y - h} ${PAGE_W - MARGIN * 2} ${h} re f`);
+    let y = this.y - pad;
+    for (const ln of lines) { this.raw(`BT /${bold ? 'F2' : 'F1'} ${size} Tf 0.08 0.13 0.18 rg ${MARGIN + pad} ${y - size} Td (${enc(ln)}) Tj ET`); y -= lh; }
+    this.y -= h + 6;
+  }
+  /** A section heading with a hairline under it. */
+  section(s: string) { this.space(8); this.text(s, { size: 11, bold: true, gap: 0 }); this.raw(`0.82 0.84 0.87 RG 0.6 w ${MARGIN} ${this.y - 1} m ${PAGE_W - MARGIN} ${this.y - 1} l S`); this.y -= 7; }
   heading(s: string, level: 1 | 2 = 1) { this.space(level === 1 ? 10 : 6); this.text(s, { size: level === 1 ? 15 : 11.5, bold: true, gap: level === 1 ? 6 : 3 }); if (level === 1) this.rule(); }
   label(s: string) { this.text(s.toUpperCase(), { size: 7.5, bold: true, color: [0.36, 0.39, 0.45], gap: 1 }); }
   rule() { this.ensure(6); this.raw(`0.78 0.8 0.84 RG 0.5 w ${MARGIN} ${this.y - 2} m ${PAGE_W - MARGIN} ${this.y - 2} l S`); this.y -= 8; }

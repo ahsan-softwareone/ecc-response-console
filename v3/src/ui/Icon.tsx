@@ -31,6 +31,9 @@ const PATHS: Record<string, string> = {
   up: 'M10 16V4M5 9l5-5 5 5',
   down: 'M10 4v12M5 11l5 5 5-5',
   flat: 'M4 10h12',
+  pulse: 'M2 10h4l2-5 4 10 2-5h4',
+  person: 'M10 9.5a3 3 0 100-6 3 3 0 000 6zM4 17c.6-3.2 3-5 6-5s5.4 1.8 6 5',
+  spark: 'M10 2.5l1.6 4.4 4.4 1.6-4.4 1.6L10 14.5l-1.6-4.4L4 8.5l4.4-1.6zM15.5 13l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z',
   download: 'M10 3v10M6 9l4 4 4-4M4 17h12',
   gear: 'M8.2 3.9L8.9 1.5L11.1 1.5L11.8 3.9L13.1 4.4L15.2 3.2L16.8 4.8L15.6 6.9L16.1 8.2L18.5 8.9L18.5 11.1L16.1 11.8L15.6 13.1L16.8 15.2L15.2 16.8L13.1 15.6L11.8 16.1L11.1 18.5L8.9 18.5L8.2 16.1L6.9 15.6L4.8 16.8L3.2 15.2L4.4 13.1L3.9 11.8L1.5 11.1L1.5 8.9L3.9 8.2L4.4 6.9L3.2 4.8L4.8 3.2L6.9 4.4zM10 7.4a2.6 2.6 0 100 5.2 2.6 2.6 0 000-5.2z',
   windows: 'M3 4h14v12H3zM3 8h14M9 8v8',
@@ -39,6 +42,7 @@ const PATHS: Record<string, string> = {
   info: 'M10 3a7 7 0 100 14 7 7 0 000-14zM10 9v5M10 6.5h.01',
   bell: 'M6 8a4 4 0 118 0c0 4 2 5 2 5H4s2-1 2-5M8.5 16a1.5 1.5 0 003 0',
   print: 'M6 7V3h8v4M4 7h12v7h-3v3H7v-3H4z',
+  ask: 'M4 5h12v9H9l-3.5 3v-3H4z',
 };
 
 export function Icon({ name, size = 16, strokeWidth = 1.75, className }: { name: keyof typeof PATHS | string; size?: number; strokeWidth?: number; className?: string }) {

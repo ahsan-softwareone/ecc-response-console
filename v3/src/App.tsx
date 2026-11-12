@@ -13,11 +13,14 @@ import { Knowledge } from './pages/Knowledge';
 import { Assistant } from './assistant/Assistant';
 import { ViewerOverlay } from './viewer/DocViewer';
 import { TrendOverlay } from './situation/TrendOverlay';
+import { setClockSkew } from './lib/time';
 import { useRecordSync } from './record/sync';
+import { useInvestigationRunner } from './investigate/useRunner';
+import { Overview, ReturnToOverview } from './pages/Overview';
 import { buildIndex } from './lib/indexer';
 import { Toast } from './ui/ui';
 import { retrieval } from './lib/retrieval';
-(window as unknown as { __ecc: unknown }).__ecc = { retrieval, store: useStore };
+(window as unknown as { __ecc: unknown }).__ecc = { retrieval, store: useStore, setClockSkew };
 
 
 export function App() {
@@ -32,7 +35,10 @@ export function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   useEffect(() => { void loadLocalData(); }, [loadLocalData]);
   useRecordSync();
+  useInvestigationRunner();
   useIndexBuild(storageReady);
+  // Signing in as the Incident Manager lands on the briefing; a reload counts as signing in again.
+  useEffect(() => { if (storageReady && useStore.getState().persona === 'incident-manager') useStore.getState().setNav('overview'); }, [storageReady]);
   useEffect(() => { if (!toast) return; const t = window.setTimeout(() => setToast(null), 6000); return () => window.clearTimeout(t); }, [toast, setToast]);
 
   // On Situation the Assistant overlays when pushing would squeeze the workspace below usable minimums.
@@ -40,17 +46,18 @@ export function App() {
   useEffect(() => { const on = () => setVw(window.innerWidth); window.addEventListener('resize', on); return () => window.removeEventListener('resize', on); }, []);
   // Push only when the workspace keeps comfortable reading widths; otherwise overlay.
   const assistantWidth = useStore((s) => s.assistantWidth);
-  // Push only when what remains keeps every column above its minimum for the current tab; otherwise overlay.
-  const MIN_WORKSPACE: Record<string, number> = { situation: 1400, sitrep: 960, agentlog: 900, knowledge: 960 };
-  const overlay = vw - assistantWidth < MIN_WORKSPACE[nav];
+  // The Assistant docks beside the workspace on every tab, the way it does on Overview: the page makes room for it.
+  // It only floats over the page when the window is too narrow to keep any usable workspace beside it.
+  const overlay = vw - assistantWidth < 720;
 
   return (
     <div className="app" data-nav={nav} data-assistant={assistantOpen ? (overlay ? 'overlay' : 'push') : 'closed'}>
       <TopBar />
-      <div className="statusstack"><StatusBar /><NotificationBanner /><AgentNotice /></div>
+      <div className="statusstack"><StatusBar /><NotificationBanner /><AgentNotice /><ReturnToOverview /></div>
       <div className="main-row">
         <div className="main" style={{ marginRight: assistantOpen && !overlay ? assistantWidth : 0 }}>
-          {noIncident && nav !== 'knowledge' && <NoIncident />}
+          {noIncident && nav !== 'knowledge' && <NoIncident overview={nav === 'overview'} />}
+          {!noIncident && nav === 'overview' && <Overview />}
           {!noIncident && nav === 'situation' && <Situation />}
           {!noIncident && nav === 'sitrep' && <SitRep />}
           {!noIncident && nav === 'agentlog' && <AgentLog />}

@@ -193,5 +193,9 @@ export const EVIDENCE_LABEL = { verified: 'Verified', reported: 'Reported', infe
 export const CONDITION_LABEL = { active: 'Active', cleared: 'Cleared', unconfirmed: 'Unconfirmed', recovered: 'Recovered', reported: 'Reported' } as const;
 /** Conditions that still need attention (used by card indicators). */
 export const ATTENTION: ConditionState[] = ['active', 'unconfirmed'];
-export const DECISION_LABEL = { none: 'No decision', approved: 'Approved', deferred: 'Deferred', declined: 'Declined' } as const;
+export const DECISION_LABEL = { none: 'No decision', approved: 'Accepted', deferred: 'Deferred', declined: 'Declined', alternative: 'Different response' } as const;
+/** One line for a recorded decision: what was decided, on which suggestion. */
+export function decisionTitle(status: keyof typeof DECISION_LABEL, summary: string, response?: string): string {
+  return status === 'alternative' ? `Different response: ${response || summary}` : `${DECISION_LABEL[status]}: ${summary}`;
+}
 export const EXECUTION_LABEL = { 'not-started': 'No execution report', reported: 'Execution reported', verified: 'Execution verified' } as const;
