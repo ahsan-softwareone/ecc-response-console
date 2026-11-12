@@ -210,7 +210,7 @@ await step('b: one issue end to end: first update, decision, field report, verif
   await p.click(T('verify-open')); await p.fill(T('verify-text'), 'Water seen on the D-0001 shell from the north road.'); await p.click(T('verify-save'));
   await wait(p, 60_000);
   assert(await ask(p) === 'Ready to close', `after verification: ${await ask(p)}`);
-  const lanes = await p.evaluate(() => ['lane-decision', 'lane-field', 'lane-verified'].map((id) => document.querySelector(`[data-testid="${id}"] dd`).textContent));
+  const lanes = await p.evaluate(() => ['lane-decision', 'lane-field', 'lane-verified'].map((id) => (document.querySelector(`[data-testid="${id}"] dd`) ?? document.querySelector(`[data-testid="${id}"]`))?.textContent ?? ''));
   assert(/Accepted/.test(lanes[0]) && /mobile monitors/.test(lanes[1]) && /north road/.test(lanes[2]) && !/north road/.test(lanes[1]), `three separate lanes: ${lanes}`);
   await p.screenshot({ path: `${OUT}/journey-ready-1366.png` });
   await p.click(T('close-open')); await p.waitForSelector(T('close-form'));
@@ -256,7 +256,7 @@ await step('c: a second update about the same open issue: ECC revises its sugges
   assert(await c.getAttribute('data-ask') === 'decision' && /\d new/.test(await c.textContent()), `card flags the new updates: ${await c.textContent()}`);
   assert(/normal relief route damaged/.test(await c.textContent()), 'title follows the development');
   await c.click(); await wait(p);
-  assert(/ECC revised its (suggestion|recommendation)/.test(await p.textContent(T('needs-line'))) && /Hold depressurization via FH-01/.test(await p.textContent(T('suggestion-text'))), 'revised suggestion needs a decision');
+  assert(/ECC revised its (suggestion|recommendation)/.test(await p.textContent(T('needs-revised'))) && /Hold depressurization via FH-01/.test(await p.textContent(T('suggestion-text'))), 'revised suggestion needs a decision');
   assert(await p.getAttribute(T('happened-lead'), 'data-update') === 'a5-1', 'leads with the update that changed the issue');
   assert(await p.locator(`${T('issue-panel')} .ir-tag.new`).count() >= 1, 'new updates are marked while the panel is open');
   assert(await p.locator(T('decision-earlier')).count() === 1, 'the earlier decision stays visible');
@@ -440,7 +440,6 @@ await step('l: tell someone with the decision (optional); the history keeps who,
   await open();
   // Optional: the Told row is offered with Accept, behind Add details.
   await p.click(T('decide-approved')); await p.click(`${T('decision-details')} > summary`); assert(await p.locator(T('decision-tell')).isVisible(), 'the Told row is offered with the decision');
-  await p.click(T('decide-approved'));
   assert(await p.locator(T('decision-within')).isEnabled() && await p.locator(T('decision-via')).isEnabled(), 'How and Expect update can be chosen before a name is typed');
   await p.selectOption(T('decision-within'), '30'); assert(await p.inputValue(T('decision-within')) === '30', 'the expected-update choice opens and takes a value');
   await p.fill(T('decision-to'), 'Fire team leader'); await p.selectOption(T('decision-via'), 'Radio'); await p.selectOption(T('decision-within'), '15');
