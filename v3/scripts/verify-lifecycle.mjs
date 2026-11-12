@@ -17,9 +17,29 @@ let pass = 0, fail = 0;
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const errors = [];
 
+/** Test harness. The response drawer is modal: a click outside it closes it. A click aimed at the workspace while the drawer is open
+ *  therefore closes the drawer first, the way a person would; clicks inside the drawer are unchanged. */
+function drawerAware(pg) {
+  const click = pg.click.bind(pg);
+  pg.click = async (sel, o) => {
+    const covered = await pg.evaluate((s) => { try { const el = document.querySelector(s); return !!el && !!document.querySelector('[data-testid="drawer-backdrop"]') && !el.closest('[data-testid="room-dock"]') && !!el.closest('.sr-main, .sr-bar'); } catch { return false; } }, sel).catch(() => false);
+    if (covered) { await click('[data-testid="panel-close"]'); await pg.waitForSelector('[data-testid="drawer-backdrop"]', { state: 'detached' }).catch(() => {}); }
+    const r = await click(sel, o);
+    // These checks read individual record entries: arriving on the Timeline, open every history group (collapsed by default) and the Sit. Rep tab.
+    if (/data-testid="(nav-sitrep|ov-full-timeline|link-record)"/.test(String(sel))) {
+      await pg.evaluate(() => document.querySelectorAll('[data-testid="moment-toggle"][aria-expanded="false"]').forEach((b) => b.click())).catch(() => {});
+    }
+    return r;
+  };
+  // Notes and who-was-told sit behind Add details on Accept; open it before filling them, as a person would.
+  const openDetails = async (sel) => { if (/rationale|decision-(to|via|within)/.test(String(sel))) await pg.evaluate(() => { const d = document.querySelector('[data-testid="decision-details"]'); if (d && !d.open) d.open = true; }).catch(() => {}); };
+  const fill0 = pg.fill.bind(pg); pg.fill = async (sel, v, o) => { await openDetails(sel); return fill0(sel, v, o); };
+  const so0 = pg.selectOption.bind(pg); pg.selectOption = async (sel, v, o) => { await openDetails(sel); return so0(sel, v, o); };
+  return pg;
+}
 async function fresh({ w = 1440, h = 900, reducedMotion } = {}) {
   const ctx = await browser.newContext({ viewport: { width: w, height: h }, acceptDownloads: true, reducedMotion });
-  const page = await ctx.newPage();
+  const page = drawerAware(await ctx.newPage());
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('favicon')) errors.push(m.text()); });
   page.on('dialog', (d) => d.accept());
@@ -27,13 +47,16 @@ async function fresh({ w = 1440, h = 900, reducedMotion } = {}) {
   return page;
 }
 const T = (id) => `[data-testid="${id}"]`;
-const state = (p) => p.evaluate(() => { const s = window.__ecc.store.getState(); return { id: s.incidentId, mode: s.incidentMode, dialog: s.dialog, nav: s.nav, hidden: s.hiddenPanels, rec: s.records[s.incidentId] ?? null, records: s.records, save: s.save }; });
+const state = (p) => p.evaluate(() => { const s = window.__ecc.store.getState(); return { id: s.incidentId, mode: s.incidentMode, dialog: s.dialog, nav: s.nav, hidden: s.hiddenPanels, rec: s.records[s.incidentId] ?? null, records: s.records, save: s.save, dashboard: s.dashboard }; });
 const stored = (p, id) => p.evaluate((rid) => new Promise((res, rej) => { const q = indexedDB.open('ecc-v3'); q.onerror = () => rej(q.error); q.onsuccess = () => { const g = q.result.transaction('incidents').objectStore('incidents').get(rid); g.onsuccess = () => res(g.result ?? null); g.onerror = () => rej(g.error); }; }), id);
 const agentState = (p) => p.getAttribute(T('agent-status'), 'data-state');
-const startTraining = async (p) => { await p.click(T('start-training')); await p.click(T('start-submit')); await p.waitForSelector(T('dock')); };
+const startTraining = async (p) => { await p.click(T('start-training')); await p.click(T('start-submit')); await p.waitForSelector(T('dock')); await p.click(T('view-updates')); };
 const openAgent = async (p) => { await p.click(T('agent-status')); await p.waitForSelector(T('agent-summary')); };
 const download = async (p, trigger) => { const [d] = await Promise.all([p.waitForEvent('download'), trigger()]); const f = resolve(OUT, await d.suggestedFilename()); await d.saveAs(f); return f; };
 const next = async (p, n = 1) => { for (let i = 0; i < n; i++) { await p.click(T('facil-next')); await sleep(120); } };
+/** Full equipment cards (Show all readings); back to the strip and the Incident Updates view. */
+const showReadings = async (p) => { if ((await p.getAttribute(T('watch-toggle'), 'aria-expanded')) === 'false') await p.click(T('watch-toggle')); };
+const toUpdates = async (p) => { if ((await p.getAttribute(T('watch-toggle'), 'aria-expanded')) === 'true') await p.click(T('watch-toggle')); await p.click(T('view-updates')); };
 async function step(name, fn) {
   if (!want(name.split(':')[0])) return;
   try { await fn(); pass++; console.log('PASS', name); } catch (e) { fail++; console.log('FAIL', name, '-', String(e.message ?? e).split('\n')[0]); }
@@ -51,8 +74,8 @@ await step('a: create incident, saved before anything else; reload recovers the 
   await p.click(T('start-eq-D-0001'));
   await p.fill(T('start-location'), 'Inlet area');
   const early = await p.evaluate(() => { const d = new Date(Date.now() - 600000); const z = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; });
-  await p.fill(T('start-occurred'), early);
-  await p.click(T('start-submit')); await p.waitForSelector(T('dock'));
+  await p.click(T('start-when-edit')); await p.fill(T('start-occurred'), early);
+  await p.click(T('start-submit')); await p.waitForSelector(T('page-overview'));
   const s = await state(p);
   assert(s.mode === 'real' && s.rec.status === 'active', 'real, active');
   const disk = await stored(p, s.id);
@@ -66,7 +89,7 @@ await step('a: create incident, saved before anything else; reload recovers the 
   await sleep(14000);
   const t = await p.textContent('body');
   assert(!/drone|D-0029 ·/i.test(t.replace(/SG GSP drone/g, '')), 'no scenario content in a real incident');
-  await p.reload(); await p.waitForSelector(T('dock')); await sleep(600);
+  await p.reload(); await p.waitForSelector(T('page-overview')); await sleep(600);
   const s2 = await state(p);
   assert(s2.id === s.id && s2.rec.createdAt === s.rec.createdAt && s2.rec.title === s.rec.title, 'same record after reload');
   assert((await agentState(p)) === 'running', 'run continues after reload');
@@ -173,12 +196,12 @@ await step('c: indicator follows processing, waiting, source loss, error and fai
   await openAgent(p); assert(/signal lost/.test(await p.textContent(T('agent-sources'))), 'source loss named'); assert(/says nothing about/.test(await p.textContent(T('agent-summary'))), 'not a safety claim'); await p.keyboard.press('Escape');
   // A failed save takes the reassuring dot away.
   await p.click(T('facil-simulate')); await p.click(T('sim-save-fail')); await p.keyboard.press('Escape');
-  await p.click(T('nav-sitrep')); await p.click(T('side-status')); await p.fill(T('observation-text'), 'Test observation'); await p.click(T('observation-save'));
+  await p.click(T('nav-sitrep')); await p.click(T('sitrep-generate'));
   await p.waitForSelector(`${T('save-indicator')}[data-state="failed"]`);
   assert((await p.textContent(T('agent-label'))) === 'Agent needs attention' && (await p.getAttribute(T('agent-status'), 'data-attention')) === 'true', 'attention while saves fail');
   await p.click(T('facil-simulate')); await p.click(T('sim-save-fail')); await p.keyboard.press('Escape');
   await p.click(T('save-retry')); await p.waitForSelector(`${T('save-indicator')}[data-state="saved"]`);
-  assert((await stored(p, (await state(p)).id)).events.some((e) => e.title === 'Test observation'), 'retry saved the work');
+  assert((await stored(p, (await state(p)).id)).events.some((e) => e.kind === 'report-version'), 'retry saved the work');
   // Simulated error.
   await p.click(T('facil-simulate')); await p.click(T('sim-agent-error')); await p.waitForSelector(`${T('agent-status')}[data-attention="true"]`);
   assert((await agentState(p)) === 'error' && (await p.textContent(T('agent-label'))) === 'Agent needs attention', 'error state');
@@ -215,7 +238,7 @@ await step('d: resolve, return to active, close with failed save then retry; his
   await p.click(T('resolve-submit')); await p.waitForSelector(`${T('statusbar')}[data-lifecycle="resolved"]`);
   const id = (await state(p)).id;
   await p.click(T('lifecycle-close')); await p.waitForSelector(T('close-dialog'));
-  assert(/draft|No SITREP/i.test(await p.textContent(T('close-sitrep-state'))), 'SITREP state stated');
+  assert(/latest Sit\. Rep is as of|No Sit\. Rep/i.test(await p.textContent(T('close-sitrep-state'))), 'Sit. Rep state stated');
   assert(/Site-wide systems are not affected/.test(await p.textContent(T('close-agent-effect'))), 'agent effect stated');
   await p.fill(T('close-rationale'), 'Emergency over; record final');
   await p.check(T('close-reviewed'));
@@ -233,7 +256,7 @@ await step('d: resolve, return to active, close with failed save then retry; his
   r = (await state(p)).rec;
   assert(r.status === 'closed' && r.closure && (await stored(p, id)).status === 'closed', 'closed after a successful retry');
   assert(r.id === id && Object.values((await state(p)).records).filter((x) => x.title === r.title && x.status === 'closed').length === 1, 'same identity, no duplicate');
-  assert(/not approved/.test(await p.textContent(T('closed-sitrep'))), 'draft SITREP not called approved');
+  assert(/Sit\. Rep as of \d\d:\d\d/.test(await p.textContent(T('closed-sitrep'))) && !/approved/.test(await p.textContent(T('closed-sitrep'))), 'the final Sit. Rep is named by time, no approval claimed');
   assert(r.agentRuns.at(-1).status === 'completed' && r.agentRuns.at(-1).endedAt, 'final run status preserved');
   assert((await agentState(p)) === 'stopped', 'agent no longer running');
   const count = r.events.length; await sleep(2500);
@@ -295,7 +318,7 @@ await step('e: historical reference stays separate from a new incident', async (
   await p.click(T(`inc-${seed}`));
   assert(/precedent, not applicable protocol/.test(await p.textContent(T('history-actions'))), 'precedent stated');
   await p.click(T('history-start-new')); await p.waitForSelector(T('based-on-note'));
-  await p.fill(T('start-title'), 'Similar event today'); await p.fill(T('start-notification'), 'Reported now'); await p.click(T('start-submit')); await p.waitForSelector(T('dock')); await sleep(1500);
+  await p.fill(T('start-title'), 'Similar event today'); await p.fill(T('start-notification'), 'Reported now'); await p.click(T('start-submit')); await p.waitForSelector(T('page-overview')); await sleep(1500);
   const s = await state(p);
   assert(s.id !== seed && s.rec.basedOn.id === seed, 'fresh identity with a pointer');
   for (const k of ['decision', 'measurement', 'report', 'recommendation']) if (k !== 'measurement') assert(!s.rec.events.some((e) => e.kind === k), `no ${k} copied`);
@@ -312,43 +335,27 @@ await step('f: hide, reopen, maximize, restore and reset keep forms, selection a
   const p = await fresh();
   await startTraining(p);
   await next(p, 3); await p.waitForSelector(T('alert-a4-2'), { timeout: 45000 });
-  await p.click(T('alert-a4-2')); await p.click(T('decide-approved')); await p.fill(T('rationale'), 'HALF TYPED');
-  await p.click(T('sev-critical')).catch(() => {});
-  await p.fill(T('filter-search'), 'D-0');
-  const q = await p.inputValue(T('filter-search'));
-  // Maximize keeps the shell.
-  await p.click(T('max-win-log'));
-  for (const id of ['nav', 'statusbar', 'agent-status', 'incident-identity', 'windows-open', 'assistant-toggle']) assert(await p.locator(T(id)).isVisible(), `${id} visible while maximized`);
+  await p.click(T('alert-a4-2')); await p.waitForSelector(`${T('issue-panel')}[data-issue="pressure"]`);
+  await p.click(T('decide-approved')); await p.fill(T('rationale'), 'HALF TYPED');
+  // The Situation Room arranges itself: tabs, a drawer and the shell stay in place.
+  for (const id of ['nav', 'statusbar', 'agent-status', 'incident-identity', 'assistant-toggle', 'room-bar']) assert(await p.locator(T(id)).isVisible(), `${id} visible`);
   assert((await p.locator(T('statusbar')).boundingBox()).y === 56, 'status bar under the header');
-  assert(await p.locator('[data-window="log"] button[title="Restore layout"]').isVisible(), 'visible restore');
-  const box = await p.locator('[data-window="log"]').boundingBox();
-  assert(box.y >= 96 && box.height > 500, `fills the workspace below the status (${box.y}, ${box.height})`);
-  assert(await p.evaluate(() => !document.fullscreenElement), 'no browser fullscreen');
-  await p.click('[data-window="log"] button[title="Restore layout"]');
-  assert((await p.inputValue(T('rationale'))) === 'HALF TYPED', 'decision text survives maximize');
-  // Hide and reopen.
-  await p.click(T('hide-win-response'));
-  assert(!(await p.locator('[data-window="response"]').isVisible()), 'hidden');
-  assert(await p.getAttribute(T('hide-win-log'), 'title') === 'Hide panel', 'tooltip');
-  await p.click(T('windows-open'));
-  assert((await p.getAttribute(T('win-situation.response'), 'data-hidden')) === 'true', 'listed as hidden');
-  await p.click(T('win-situation.response')); await p.waitForSelector('[data-window="response"]');
-  assert((await p.inputValue(T('rationale'))) === 'HALF TYPED', 'decision text survives hide');
-  assert((await p.inputValue(T('filter-search'))) === q, 'filter survives');
-  assert((await p.evaluate(() => window.__ecc.store.getState().selectedAlertId)) === 'a4-2', 'selection survives');
-  // All hidden.
-  for (const id of ['hide-win-equipment', 'hide-win-log', 'hide-win-response']) await p.click(T(id));
-  await p.waitForSelector(T('panels-recovery'));
-  await p.click(T('recovery-reset')); await p.waitForSelector('[data-window="equipment"]');
-  assert((await p.inputValue(T('rationale'))) === 'HALF TYPED', 'decision text survives reset');
-  assert(Object.keys((await state(p)).hidden).length === 0, 'reset clears hidden');
-  // Layout preference is not an incident fact.
-  await p.click(T('hide-win-equipment')); await p.reload(); await p.waitForSelector(T('dock')); await sleep(500);
-  assert(!(await p.locator('[data-window="equipment"]').isVisible()), 'hidden state persists');
-  assert(!JSON.stringify((await state(p)).rec).includes('hiddenPanels'), 'not in the record');
-  await p.click(T('windows-open')); await p.click(T('windows-reset')); await p.waitForSelector('[data-window="equipment"]');
+  await p.click(T('panel-dock')); assert(await p.getAttribute(T('dock'), 'data-dock') === 'wide', 'widened');
+  assert((await p.inputValue(T('rationale'))) === 'HALF TYPED', 'decision text survives widening');
+  await p.click(T('panel-dock'));
+  // Working in the room behind the drawer closes it; the half-typed decision is kept for when the issue reopens.
+  await toUpdates(p); await p.click(T('origin-monitoring')); await showReadings(p);
+  assert(await p.locator(T('issue-panel')).count() === 0, 'the drawer closed when the workspace was used');
+  await p.click(T('view-issues')); await p.click(`${T('issue-card')}[data-issue="pressure"]`); await p.waitForSelector(T('issue-panel'));
+  assert((await p.inputValue(T('rationale'))) === 'HALF TYPED', 'decision text survives switching tabs, closing and reopening');
+  await p.reload(); await p.waitForSelector(T('dock')); await sleep(500);
+  assert(await p.locator(`${T('issue-panel')}[data-issue="pressure"]`).count() === 1, 'the open issue survives a reload');
+  assert((await p.inputValue(T('rationale'))) === 'HALF TYPED', 'and so does the half-typed decision');
+  assert(!JSON.stringify((await state(p)).rec).includes('"room"'), 'room layout is not in the record');
+  await toUpdates(p); assert(await p.getAttribute(T('origin-monitoring'), 'aria-pressed') === 'true', 'feed filter survives');
+  await p.click(T('origin-all'));
   // Sit. Rep: same controls, half-edited form survives.
-  await p.click(T('nav-sitrep')); await p.click(T('sitrep-new')); await p.waitForSelector(T('sitrep-editor'));
+  await p.click(T('nav-sitrep')); await p.click(T('sitrep-generate')); await p.waitForSelector(T('sitrep-editor'));
   await p.fill(T('sitrep-input-outstanding'), 'HALF EDITED');
   await p.click(T('hide-sitrep-b')); await p.waitForSelector(`${T('splitpane-sitrep')}[data-maximized="a"]`);
   await p.click(T('windows-open')); await p.click(T('win-sitrep.b')); await p.waitForSelector(T('sitrep-input-outstanding'));
@@ -398,9 +405,11 @@ await step('h: cleanup: labelled alert badge, no doubled tags, compact Admin too
   const p = await fresh({ w: 1366, h: 768 });
   await startTraining(p);
   await next(p, 1); await p.waitForSelector(T('alert-a2-1'), { timeout: 45000 });
+  await showReadings(p);
   const badge = p.locator('[data-testid="walert-D-0029:pressure"]');
   assert(/1 alert/.test(await badge.textContent()) && /does not mean the value is above a limit/.test(await badge.getAttribute('title')), 'badge says what it counts');
-  await badge.click(); assert((await p.evaluate(() => window.__ecc.store.getState().selectedAlertId)) === 'a2-1', 'opens the alert');
+  await badge.click(); await p.waitForSelector(T('feed-equipment'));
+  assert((await p.evaluate(() => window.__ecc.store.getState().selectedAlertId)) === null && await p.locator(`${T('issue-panel')}, ${T('update-panel')}`).count() === 0 && /D-0029/.test(await p.textContent(T('feed-equipment'))), 'shows D-0029’s notifications; selects and opens nothing');
   // Dialogs fit the short screen; the action stays reachable.
   await p.click(T('lifecycle-resolve'));
   const sb = await p.locator(T('resolve-submit')).boundingBox();
@@ -415,17 +424,16 @@ await step('h: cleanup: labelled alert badge, no doubled tags, compact Admin too
   await p.click(T('nav-agentlog'));
   const titleEl = p.locator('[data-testid="splitpane-agentlog"] .split-a .pane-h .title');
   assert(await titleEl.evaluate((e) => e.scrollWidth <= e.clientWidth), 'Agent log title not truncated');
-  await p.click(T('nav-situation'));
-  // Two cards side by side at 1366.
+  await p.click(T('nav-situation')); await showReadings(p);
+  // Two cards side by side at 1366 when no panel is open.
   const c1 = await p.locator(T('card-D-0029')).boundingBox(); const c2 = await p.locator(T('card-D-0001')).boundingBox();
   assert(c1.y === c2.y && c1.width >= 330, `two columns (${c1.width})`);
   const fs = await p.locator('.wrow .var').first().evaluate((e) => getComputedStyle(e).fontSize);
   assert(parseFloat(fs) >= 12, `text not shrunk (${fs})`);
   // Doubled tags.
-  await p.click(T('alert-a2-1')); await next(p, 3); await p.waitForSelector(T('alert-a5-1'), { timeout: 45000 }).catch(() => {});
+  await toUpdates(p); await p.click(T('alert-a2-1')); await next(p, 3); await p.waitForSelector(T('alert-a5-1'), { timeout: 45000 }).catch(() => {});
   await p.click(T('assistant-toggle')); await sleep(200);
-  const banner = await p.locator('.as-critical').first().textContent().catch(() => '');
-  assert(!/(\b[A-Z]{1,2}-\d{2,4}\b) · \1/.test(banner), `no doubled tag (${banner})`);
+  assert(await p.locator(`${T('assistant')} .as-critical`).count() === 0 && await p.locator(`${T('assistant')} ${T('assistant-input')}`).isVisible(), 'the Assistant opens on the conversation, with no alert banner');
   await p.click(T('assistant-close'));
   // Admin toolbar.
   await p.click(T('user-menu')); await p.click(T('role-admin')); await p.keyboard.press('Escape');
@@ -469,14 +477,15 @@ if (shots) {
     await p.setViewportSize({ width: w, height: h });
     await p.evaluate((t) => window.__ecc.store.getState().setTheme(t), th);
     const tag = `${w}-${th}`;
-    await p.click(T('nav-situation')); await snap('situation', tag);
-    await p.click(T('max-win-log')); await snap('maximized', tag); await p.click('[data-window="log"] button[title="Restore layout"]');
+    // Returning to the room from another tab closes the drawer, so open the issue again for these views.
+    await p.click(T('nav-situation')); if (!(await p.locator(T('issue-panel')).count())) { await p.click(T('view-updates')).catch(() => {}); await p.click(T('alert-a4-2')); await p.waitForSelector(T('panel-dock')); } await snap('situation', tag);
+    await p.click(T('panel-dock')); await snap('panel-wide', tag); await p.click(T('panel-dock'));
     await openAgent(p); await snap('agent-popover', tag); await p.keyboard.press('Escape');
     await p.click(T('windows-open')); await snap('windows', tag); await p.keyboard.press('Escape');
     await p.click(T('settings-open')); await p.click(T('settings-application')); await snap('settings', tag); await p.click(T('settings-incident')); await snap('settings-incident', tag); await p.keyboard.press('Escape');
     await p.click(T('lifecycle-resolve')); await snap('resolve', tag); await p.keyboard.press('Escape');
     await p.click(T('nav-agentlog')); await snap('agentlog', tag);
-    await p.click(T('nav-sitrep')); await p.click(T('side-status')); await snap('status', tag);
+    await p.click(T('nav-sitrep')); await snap('sitrep', tag);
     await p.click(T('nav-knowledge')); await p.click(T('kv-incidents')); await snap('history', tag);
     await p.click(T('nav-situation'));
     await p.click(T('facil-simulate')); await p.click(T('sim-notification')); await p.keyboard.press('Escape');
@@ -491,6 +500,40 @@ if (shots) {
   await q.context().close();
   console.log('layout audit:', JSON.stringify(Object.fromEntries(Object.entries(report).filter(([, v]) => v.length))));
 }
+await step('k: Start incident as a short intake: a fire at known equipment, and smoke in an approximate area with no equipment identified', async () => {
+  // Fire at D-0029.
+  let p = await fresh(); await p.click(T('start-incident')); await p.waitForSelector(T('start-form'));
+  for (const id of ['start-type', 'start-notification', 'start-site', 'start-area', 'start-location', 'start-eq-search', 'start-eq-unknown', 'start-when-now', 'start-by', 'start-title']) assert(await p.locator(T(id)).isVisible(), `${id} visible in the one form`);
+  assert(await p.locator(T('start-channel')).isVisible() === false, 'supporting detail behind Add more details');
+  assert((await p.locator(`${T('start-type')} option`).allTextContents()).includes('Not sure'), 'type offers Not sure');
+  await p.selectOption(T('start-type'), 'Fire'); await p.fill(T('start-notification'), 'Flames at the base of the propane accumulator.');
+  await p.selectOption(T('start-area'), 'Propane recovery');
+  await p.fill(T('start-eq-search'), 'accumulator');
+  assert(await p.locator(`${T('start-equipment')} label`).count() === 1, 'search by name finds it');
+  await p.check(T('start-eq-D-0029'));
+  assert((await p.inputValue(T('start-title'))) === 'Fire at D-0029 Propane accumulator', 'title suggested from what was entered');
+  assert((await p.textContent(T('start-submit'))) === 'Start incident', 'Start incident is the action');
+  await p.click(T('start-submit')); await p.waitForSelector(T('page-overview'));
+  assert((await p.textContent(T('ov-headline'))) === 'Fire reported at D-0029 Propane accumulator, Propane recovery area.', 'Overview states the report');
+  assert(/D-0029 Propane accumulator · named at intake, not verified/.test(await p.textContent(T('ov-intake-equipment'))) && /Flames at the base/.test(await p.textContent(T('ov-intake-notification'))), 'equipment and the original notification');
+  assert(JSON.stringify((await state(p)).dashboard) === '["D-0029"]', 'the selected equipment is in Equipment watch');
+  assert(await p.locator(`${T('ov-suggest-item')}[data-eq="DS-029"]`).count() === 1, 'ECC suggests more, for confirmation');
+  await p.click(T('ov-suggest-add-DS-029')); await sleep(300);
+  assert((await state(p)).dashboard.includes('DS-029') && (await state(p)).rec.events.some((e) => /DS-029 Area deluge added to Equipment watch \(suggested by ECC, confirmed\)/.test(e.title)), 'confirmed, and recorded');
+  await p.context().close();
+  // Smoke near an approximate place; equipment not known.
+  p = await fresh(); await p.click(T('start-incident')); await p.waitForSelector(T('start-form'));
+  await p.selectOption(T('start-type'), 'Smoke'); await p.fill(T('start-notification'), 'Grey smoke rising from the north side of the propane area. No flames seen.');
+  await p.fill(T('start-location'), 'north side of the propane area'); await p.check(T('start-approx')); await p.check(T('start-eq-unknown'));
+  assert((await p.inputValue(T('start-title'))) === 'Smoke near the north side of the propane area', 'title suggested');
+  await p.click(T('start-submit')); await p.waitForSelector(T('page-overview'));
+  assert((await p.textContent(T('ov-headline'))) === 'Smoke reported near the north side of the propane area (approximate); equipment not yet identified.', 'uncertainty kept in the Overview wording');
+  const r = (await state(p)).rec;
+  assert(r.intake.placeApprox && r.intake.equipmentUnknown && r.events.some((e) => e.title === 'Equipment not yet identified'), 'and in the record');
+  assert((await state(p)).dashboard.length === 0, 'nothing put in Equipment watch without a person choosing it');
+  await p.context().close();
+});
+
 await browser.close();
 if (errors.length) { fail++; console.log('FAIL console errors:', JSON.stringify([...new Set(errors)].slice(0, 6))); }
 console.log(`\n${pass} passed, ${fail} failed`);

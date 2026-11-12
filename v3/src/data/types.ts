@@ -5,7 +5,7 @@ export type Severity = 'critical' | 'high' | 'medium' | 'low';
 export type EvidenceStatus = 'verified' | 'reported' | 'inferred' | 'unverified';
 export type SourceHealth = 'live' | 'stale' | 'lost';
 export type ConditionState = 'active' | 'cleared' | 'unconfirmed' | 'recovered' | 'reported';
-export type DecisionStatus = 'none' | 'approved' | 'deferred' | 'declined';
+export type DecisionStatus = 'none' | 'approved' | 'deferred' | 'declined' | 'alternative';
 export type ExecutionStatus = 'not-started' | 'reported' | 'verified';
 export type Trend = 'rising' | 'falling' | 'steady';
 
@@ -63,6 +63,8 @@ export interface Recommendation {
   summary: string;
   actions: string[];            // generic, illustrative wording
   prerequisites?: string[];     // missing prerequisites / uncertainty
+  /** What someone checks to confirm the response worked, in plain words. */
+  verify?: string;
   evidence: EvidenceRef[];
   calculation?: { label: string; status: 'unavailable'; reason: string } | { label: string; status: 'available'; value: string; basis: string };
 }
@@ -80,6 +82,13 @@ export interface AlertDef {
   statusNote?: string;
   /** The sentence for the Overview headline while this alert describes the item's current state. */
   brief?: string;
+  /** Situation Room: the issue this update belongs to, a new title for that issue, and the update in plain words. */
+  issue?: string;
+  issueTitle?: string;
+  plain?: string;
+  /** Timeline: this alert records something people did (an action) or a result of what they did, and who reported it. */
+  act?: 'action' | 'result';
+  actor?: string;
   offsetSec: number;             // seconds after the step reveal
   watcherId?: string;
   measurement?: string;          // "18.3 bar vs High limit 18.0 bar"
@@ -106,6 +115,13 @@ export interface ObservationDef {
   evidence: EvidenceStatus;
   source: string;                // "Field — Fire team leader", "PI tag D0001.PT"
   sourceHealth?: SourceHealth;
+  /** Situation Room: the issue it belongs to ('info' for information only), or the issue ECC suggests when a person must place it. */
+  issue?: string;
+  review?: { suggest?: string; reason: string };
+  issueTitle?: string;
+  plain?: string;
+  /** Timeline: a report of something people did (an action) or of its result. */
+  act?: 'action' | 'result';
 }
 
 export interface LogLine { t: number; level: 'info' | 'warn' | 'error'; text: string }

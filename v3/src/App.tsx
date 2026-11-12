@@ -46,9 +46,9 @@ export function App() {
   useEffect(() => { const on = () => setVw(window.innerWidth); window.addEventListener('resize', on); return () => window.removeEventListener('resize', on); }, []);
   // Push only when the workspace keeps comfortable reading widths; otherwise overlay.
   const assistantWidth = useStore((s) => s.assistantWidth);
-  // Push only when what remains keeps every column above its minimum for the current tab; otherwise overlay.
-  const MIN_WORKSPACE: Record<string, number> = { situation: 1400, sitrep: 960, agentlog: 900, knowledge: 960 };
-  const overlay = vw - assistantWidth < MIN_WORKSPACE[nav];
+  // The Assistant docks beside the workspace on every tab, the way it does on Overview: the page makes room for it.
+  // It only floats over the page when the window is too narrow to keep any usable workspace beside it.
+  const overlay = vw - assistantWidth < 720;
 
   return (
     <div className="app" data-nav={nav} data-assistant={assistantOpen ? (overlay ? 'overlay' : 'push') : 'closed'}>

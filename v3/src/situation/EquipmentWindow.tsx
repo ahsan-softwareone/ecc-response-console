@@ -12,42 +12,52 @@ import { IconButton, Popover, SourceDot } from '../ui/ui';
 import { WindowFrame } from './WindowFrame';
 import { rememberOpener } from './TrendOverlay';
 
-export function EquipmentWindow() {
+export function EquipmentWindow({ bare }: { bare?: boolean } = {}) {
   const dashboard = useStore((s) => s.dashboard);
-  const addEquipment = useStore((s) => s.addEquipment);
   const swapSides = useStore((s) => s.swapSides);
-  const d = useDerived();
-  const catalogue = EQUIPMENT.filter((e) => !dashboard.includes(e.id));
-
   return (
-    <WindowFrame id="equipment" title="Equipment" meta={`${dashboard.length} monitored`} actions={
+    <WindowFrame id="equipment" bare={bare} title="Equipment" meta={`${dashboard.length} monitored`} actions={
       <>
-        <Popover width={300} trigger={(open, toggle) => (
-          <button className="btn sm" onClick={toggle} aria-expanded={open} data-testid="add-equipment"><Icon name="plus" size={14} /> Add equipment</button>
-        )}>
-          {(close) => (
-            <>
-              <div className="head label">Plant items</div>
-              {catalogue.length === 0 && <div className="empty">Everything in the catalogue is on the dashboard.</div>}
-              {catalogue.map((e) => (
-                <button key={e.id} className="item" onClick={() => { addEquipment(e.id); close(); }} data-testid={`add-${e.id}`}>
-                  <span><b>{e.id}</b> · {e.name}</span>
-                  <span className="sub">{d.roleOf(e.id) || e.area}</span>
-                </button>
-              ))}
-            </>
-          )}
-        </Popover>
-        <IconButton className="sm" name="swap" title="Swap monitoring and response sides" onClick={swapSides} />
+        <AddEquipment />
+        {!bare && <IconButton className="sm" name="swap" title="Swap monitoring and response sides" onClick={swapSides} />}
       </>
     }>
-      <div className="scroll">
-        <div className="cards" data-testid="cards">
-          {dashboard.map((id) => <EquipmentCard key={id} equipment={d.equipmentById.get(id)!} d={d} />)}
-        </div>
-      </div>
+      <div className="scroll"><EquipmentCards /></div>
     </WindowFrame>
   );
+}
+
+/** Add a plant item to monitoring. */
+export function AddEquipment() {
+  const dashboard = useStore((s) => s.dashboard);
+  const addEquipment = useStore((s) => s.addEquipment);
+  const d = useDerived();
+  const catalogue = EQUIPMENT.filter((e) => !dashboard.includes(e.id));
+  return (
+    <Popover width={300} trigger={(open, toggle) => (
+      <button className="btn sm" onClick={toggle} aria-expanded={open} data-testid="add-equipment"><Icon name="plus" size={14} /> Add equipment</button>
+    )}>
+      {(close) => (
+        <>
+          <div className="head label">Plant items</div>
+          {catalogue.length === 0 && <div className="empty">Everything in the catalogue is on the dashboard.</div>}
+          {catalogue.map((e) => (
+            <button key={e.id} className="item" onClick={() => { addEquipment(e.id); close(); }} data-testid={`add-${e.id}`}>
+              <span><b>{e.id}</b> · {e.name}</span>
+              <span className="sub">{d.roleOf(e.id) || e.area}</span>
+            </button>
+          ))}
+        </>
+      )}
+    </Popover>
+  );
+}
+
+/** Every monitored item as a card with its watchers, readings and trends. */
+export function EquipmentCards() {
+  const dashboard = useStore((s) => s.dashboard);
+  const d = useDerived();
+  return <div className="cards" data-testid="cards">{dashboard.map((id) => <EquipmentCard key={id} equipment={d.equipmentById.get(id)!} d={d} />)}</div>;
 }
 
 function EquipmentCard({ equipment, d }: { equipment: Equipment; d: Derived }) {
@@ -58,11 +68,11 @@ function EquipmentCard({ equipment, d }: { equipment: Equipment; d: Derived }) {
   const reportedInv = useStore((s) => s.records[s.incidentId]?.investigations?.filter((i) => i.kind === 'observation' && i.context.equipmentId === equipment.id).pop());
   const reported = useStore((s) => (reportedInv ? s.records[s.incidentId]?.events.find((e) => e.id === reportedInv.observationEventId) : undefined));
   const selectConcern = useStore((s) => s.selectConcern);
-  const filtered = useStore((s) => s.logFilters.equipment.includes(equipment.id));
+  const filtered = false;
   const flash = useStore((s) => s.flashEquipment === equipment.id);
   const cardRef = useRef<HTMLElement>(null);
   useEffect(() => { if (!flash || !cardRef.current) return; cardRef.current.scrollIntoView({ block: 'nearest' }); cardRef.current.focus(); const t = window.setTimeout(() => useStore.getState().setFlashEquipment(null), 2400); return () => window.clearTimeout(t); }, [flash]);
-  const toggleEquipmentFilter = useStore((s) => s.toggleEquipmentFilter);
+  const showUpdates = useStore((s) => s.showEquipmentUpdates);
   const openViewer = useStore((s) => s.openViewer);
   const startedAt = useStore((s) => s.startedAt);
   const revealedAt = useStore((s) => s.revealedAt);
@@ -86,8 +96,8 @@ function EquipmentCard({ equipment, d }: { equipment: Equipment; d: Derived }) {
           <div className="role">{role || equipment.area}</div>
         </div>
         {alerts.length > 0 && (
-          <button className="ind" aria-pressed={filtered} title={filtered ? `Remove ${equipment.id} from the alert filter` : `Filter the alert log to ${equipment.id}`} onClick={() => toggleEquipmentFilter(equipment.id)} data-testid={`ind-${equipment.id}`}>
-            <Icon name="filter" size={13} />
+          <button className="ind" title={`Show ${equipment.id}’s ${alerts.length} notification${alerts.length === 1 ? '' : 's'} in Incident Updates`} onClick={() => showUpdates(equipment.id)} data-testid={`ind-${equipment.id}`}>
+            <Icon name="arrowR" size={13} />
             {bySev.length === 0 ? <span className="badge neutral" title={`${alerts.length} alerts, none needing attention`}>{alerts.length}</span> : bySev.slice(0, 2).map((x) => <span key={x.s} className={`badge sev-${x.s}`} title={`${x.n} ${x.s} needing attention`}>{x.n}</span>)}
           </button>
         )}
@@ -143,7 +153,7 @@ function WatcherRow({ w, limitLabel, windowMin, clock, now, alerts, onChange }: 
   const breach = limit ? (limit.kind === 'high' ? s.value > limit.value : s.value < limit.value) : false;
   const isStatus = w.unit === 'status';
   const trendIcon = s.trend === 'rising' ? 'up' : s.trend === 'falling' ? 'down' : 'flat';
-  const selectAlert = useStore((s) => s.selectAlert);
+  const showUpdates = useStore((s) => s.showEquipmentUpdates);
   const related = alerts.filter((a) => a.def.watcherId === w.id && ATTENTION.includes(a.condition)).sort((a, b) => SEVERITY_ORDER[a.def.severity] - SEVERITY_ORDER[b.def.severity]);
   const [inspect, setInspect] = useState(false);
   const setTrendView = useStore((st) => st.setTrendView);
@@ -151,7 +161,7 @@ function WatcherRow({ w, limitLabel, windowMin, clock, now, alerts, onChange }: 
   return (
     <div className="wrow" data-testid={`watcher-${w.id}`} data-breach={breach || undefined} data-value={s.value}>
       <div className="v1">
-        <div className="var">{w.variable}{related[0] && <button className={`walert sev-${related[0].def.severity}`} onClick={() => selectAlert(related[0].id)} title={`${related.length} alert${related.length === 1 ? '' : 's'} linked to this reading: ${related.map((r) => r.def.title).join('; ')}. It does not mean the value is above a limit. Click to open.`} data-testid={`walert-${w.id}`}>{related.length} alert{related.length === 1 ? '' : 's'}</button>}</div>
+        <div className="var">{w.variable}{related[0] && <button className={`walert sev-${related[0].def.severity}`} onClick={() => showUpdates(w.equipmentId)} title={`${related.length} alert${related.length === 1 ? '' : 's'} linked to this reading: ${related.map((r) => r.def.title).join('; ')}. It does not mean the value is above a limit. Shows ${w.equipmentId}’s notifications in Incident Updates.`} data-testid={`walert-${w.id}`}>{related.length} alert{related.length === 1 ? '' : 's'}</button>}</div>
         <button className={`val ${breach ? 'breach' : ''}`} onClick={() => setInspect((v) => !v)} title="Inspect measurement" aria-expanded={inspect} style={{ textAlign: 'left' }}>
           {formatValue(w, s.value)}{!isStatus && <span className="unit">{w.unit}</span>}
           {!isStatus && s.source !== 'lost' && <span className={`trend ${s.trend === 'rising' ? 'up' : s.trend === 'falling' ? 'down' : ''}`} title={s.trend}><Icon name={trendIcon} size={13} /></span>}

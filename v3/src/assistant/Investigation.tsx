@@ -17,8 +17,9 @@ const STATE_ATTR: Record<InvestigationResponse['state'], string> = { answered: '
 
 /** Open a recommendation in the existing response workspace. No decision is made or duplicated here. */
 export function useOpenInWorkspace(originInv?: string) {
-  const openRecommendation = useStore((s) => s.openRecommendation); const showPanel = useStore((s) => s.showPanel); const maximize = useStore((s) => s.maximize); const layout = useStore((s) => s.layout);
-  return (alertId: string) => { showPanel('situation.response'); if (layout.maximized && layout.maximized !== 'response') maximize(null); openRecommendation(alertId, originInv); };
+  const openRecommendation = useStore((s) => s.openRecommendation); const showPanel = useStore((s) => s.showPanel); const maximize = useStore((s) => s.maximize); const layout = useStore((s) => s.layout); const setOpen = useStore((s) => s.setAssistantOpen); const width = useStore((s) => s.assistantWidth);
+  // The issue panel docks on the right; where the Assistant would cover it, the Assistant steps aside.
+  return (alertId: string) => { showPanel('situation.response'); if (layout.maximized && layout.maximized !== 'response') maximize(null); openRecommendation(alertId, originInv); if (window.innerWidth - width < 1400) setOpen(false); };
 }
 /** Bring this entry into the Investigation window. Where the Assistant would cover it, the Assistant steps aside. */
 function useOpenConcern() {

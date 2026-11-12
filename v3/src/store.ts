@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { DEFAULT_DASHBOARD, EMERGENCY_META, STEPS, STEP_COUNT, USER, WATCHERS } from './data/scenario';
+import { DEFAULT_DASHBOARD, EMERGENCY_META, EQUIPMENT, STEPS, STEP_COUNT, USER, WATCHERS } from './data/scenario';
 import type { ConditionState, DecisionStatus, EvidenceRef, ExecutionStatus, Region, Severity } from './data/types';
 import { idb, StorageError, storageSim } from './lib/idb';
 import { CAPABILITIES, DEFAULT_AGENT_CONFIG, configLabel, currentRun, describeConfig, isOpen } from './lib/agent';
@@ -11,7 +11,7 @@ import { SEED_INCIDENTS } from './record/seeds';
 import { generateSitrep } from './record/timeline';
 import { clock, clockSkew, now, setClockSkew } from './lib/time';
 import { OBSERVATION_SOURCE } from './record/types';
-import type { AgentConfig, AgentEvent, AgentRun, IncidentRecord, Investigation, InvestigationResponse, ObservationSource, RecordEvent, ReportVersion, SimSnapshot, SitrepSectionKey, SitrepSections } from './record/types';
+import type { AgentConfig, AgentEvent, AgentRun, IncidentRecord, Intake, ProposalFeedback, Investigation, InvestigationResponse, ObservationSource, RecordEvent, ReportVersion, SimSnapshot, SitrepSectionKey, SitrepSections } from './record/types';
 
 /** What the Overview's Quick detail panel shows: a status card, an attention item, a milestone, the executive brief or the open-items list. */
 export type QuickRef = { kind: 'card'; id: string } | { kind: 'item'; id: string } | { kind: 'ms'; id: string } | { kind: 'exec' } | { kind: 'queue' } | { kind: 'severity' } | { kind: 'record' };
@@ -20,6 +20,16 @@ export type WindowId = 'equipment' | 'log' | 'response' | 'document';
 export type ResponseTab = 'response' | 'observations' | 'sources';
 export type Role = 'user' | 'admin';
 
+/** Situation Room. An issue groups updates that share one response; closing and reopening keep their history. */
+export interface IssueEntry { kind: 'closed' | 'reopened'; t: number; by: string; note: string; title: string }
+export interface IssueUserState { lastSeen?: number; closed?: { t: number; by: string; note: string } | null; history: IssueEntry[] }
+/** A person's placement of an update: into an issue, or as information only. Overrides ECC's placement. */
+export interface Placement { to: string; by: string; at: number; label: string; toTitle: string }
+/** An issue a person opened from an update. */
+export interface UserIssue { id: string; title: string; t: number; by: string; from: string; equipmentId?: string }
+export interface Room { issue: string | null; update: string | null; focus: string | null; /** Worklist view: Open issues or Incident Updates. */ view: 'issues' | 'updates'; /** Equipment watch showing every reading. */ watch?: boolean; /** Incident Updates narrowed to one issue's updates. */ feedIssue?: string | null; /** Incident Updates narrowed to one piece of equipment (from its bell or count). */ feedEquipment?: string | null; /** Worklist layout: tabs (default) or split, Open issues beside Incident Updates. */ layout?: 'tabs' | 'split'; /** Split view: the Open issues share of the width. */ splitFrac?: number; /** Split view: the issue selected in the list (highlighted, not opened). */ pick?: string | null; /** Split view: the updates pane shows this issue only, or all updates. */ feedMode?: 'issue' | 'all'; /** Equipment watch height as a share of the workspace, set by its divider; empty for the compact strip. */ watchFrac?: number | null; list: 'open' | 'closed'; dock: 'side' | 'wide'; feed: 'all' | 'issue'; origin: 'all' | 'monitoring' | 'people' | 'agent'; sub: 'main' | 'evidence' | 'place' }
+export const ROOM_DEFAULT: Room = { issue: null, update: null, focus: null, view: 'issues', watch: false, list: 'open', dock: 'side', feed: 'all', origin: 'all', sub: 'main' };
+
 export interface Decision {
   status: Exclude<DecisionStatus, 'none'>;
   rationale: string;
@@ -27,9 +37,13 @@ export interface Decision {
   at: number;
   evidenceUsed: { docId: string; revision: string; page: number; label: string }[];
   recommendationSummary: string;
+  /** For a different response: what will be done instead of the suggestion. */
+  response?: string;
 }
 export interface FieldReport { id: string; at: number; by: string; text: string; status: ExecutionStatus }
-export interface AlertUserState { readAt?: number; ackAt?: number; decision?: Decision; reports: FieldReport[] }
+/** Who the Incident Manager told about a decision, how, and when they expect to hear back. ECC records it; it sends nothing. */
+export interface Contact { id: string; at: number; by: string; to: string; via: 'Radio' | 'Phone' | 'In person' | 'Message' | 'Other'; note?: string; /** Expect a field update by this time. */ expectBy?: number; /** A follow-up on an earlier contact. */ followUpOf?: string; /** The decision this contact passed on, if any. */ decision?: string }
+export interface AlertUserState { readAt?: number; ackAt?: number; decision?: Decision; /** Earlier decisions on the same suggestion (a deferral later decided, for example). */ past?: Decision[]; reports: FieldReport[]; contacts?: Contact[] }
 export interface WatcherOverride { onCard?: boolean; limit?: string | null; windowMin?: 15 | 60 }
 export interface LogFilters { severity: 'all' | Severity; equipment: string[]; status: ConditionState[]; query: string }
 export const EMPTY_FILTERS: LogFilters = { severity: 'all', equipment: [], status: [], query: '' };
@@ -52,7 +66,7 @@ export interface AssistantMessage { id: string; role: 'user' | 'assistant'; t: n
 export type AssistantMode = 'ask' | 'report';
 export interface AssistantContext { equipmentId?: string; alertId?: string }
 export interface ObservationInput { text: string; equipmentId?: string; location?: string; observedAt?: number; sourceType: ObservationSource; sourceDetail?: string; question?: string; alertId?: string }
-export interface StartInput { mode: 'real' | 'training'; site: string; title: string; notification: string; via: string; occurredAt?: number; equipment: string[]; location?: string; incidentType?: string; basedOn?: { id: string; title: string } }
+export interface StartInput { mode: 'real' | 'training'; site: string; title: string; notification: string; via: string; occurredAt?: number; equipment: string[]; location?: string; incidentType?: string; basedOn?: { id: string; title: string }; intake?: Intake }
 export interface IncomingNotification { id: string; t: number; site: string; title: string; text: string; via: string; equipment: string[]; location?: string }
 export type Dialog = { type: 'start'; mode: 'real' | 'training'; prefill?: Partial<StartInput> } | { type: 'resolve' } | { type: 'return-active' } | { type: 'close' } | { type: 'closed'; id: string } | { type: 'stop-agent' } | { type: 'reopen'; id: string } | { type: 'resume'; id: string };
 export type Result = { ok: true } | { ok: false; error: string };
@@ -87,6 +101,10 @@ export interface State {
   dashboard: string[];
   watcherOverrides: Record<string, WatcherOverride>;
   alertUser: Record<string, AlertUserState>;
+  issueUser: Record<string, IssueUserState>;
+  placements: Record<string, Placement>;
+  userIssues: UserIssue[];
+  room: Room;
   selectedAlertId: string | null;
   /** A selected observation or question. Alert selection and this are mutually exclusive. */
   selectedInvestigationId: string | null;
@@ -112,6 +130,10 @@ export interface State {
   /** Session: where the overview was left, so returning restores it. */
   overview: { scroll: number; expanded: string[]; allAttention: boolean; fromOverview: boolean; chartSel: string | null; view: 'chart' | 'list' | null; watcher: string | null; layout?: 'brief' | 'story'; quick?: QuickRef | null };
   timelineFocus: string | null;
+  /** Timeline workspace: the story of the response or the full record, optionally scoped to one issue; the story item to bring into view. */
+  timelineMode: 'story' | 'full';
+  timelineScope: string | null;
+  storyFocus: string | null;
   flashEquipment: string | null;
   activityTask: string | null;
   agentView: 'business' | 'detailed';
@@ -147,9 +169,23 @@ export interface State {
   clearAllLocalData: () => Promise<void>;
   setAutoplay: (v: boolean) => void;
   addEquipment: (id: string) => void;
+  /** Confirm or dismiss equipment ECC suggested at intake. Confirmed equipment joins Equipment watch; both are recorded. */
+  resolveSuggestedEquipment: (id: string, add: boolean) => Promise<Result>;
   removeEquipment: (id: string) => void;
   setWatcher: (id: string, o: WatcherOverride) => void;
   selectAlert: (id: string | null) => void;
+  setRoom: (patch: Partial<Room>) => void;
+  /** Open an issue in the Situation Room's response panel, optionally bringing one of its updates into focus. */
+  openIssue: (id: string, o?: { focus?: string | null; from?: 'overview' }) => void;
+  openUpdate: (updateId: string, o?: { from?: 'overview' }) => void;
+  closeRoomPanel: () => void;
+  /** An equipment bell or count: show that equipment's updates in Incident Updates. Opens nothing and selects nothing. */
+  showEquipmentUpdates: (equipmentId: string) => void;
+  markIssueSeen: (id: string, t: number) => void;
+  /** Place an update in an issue, as information only, or in a new issue. Returns the issue id ('info' for information only). */
+  placeUpdate: (updateId: string, to: string | { title: string; equipmentId?: string }, label: string, toTitle?: string) => string;
+  closeIssue: (id: string, title: string, note: string) => void;
+  reopenIssue: (id: string, title: string, note: string) => void;
   selectConcern: (invId: string | null, tab?: ResponseTab) => void;
   openRecommendation: (alertId: string, originInv?: string | null) => void;
   retryInvestigation: (invId: string) => Promise<void>;
@@ -157,6 +193,9 @@ export interface State {
   acknowledge: (id: string) => void;
   recordDecision: (id: string, d: Decision) => void;
   addReport: (id: string, r: FieldReport) => void;
+  addContact: (id: string, c: Contact) => void;
+  /** Save feedback on a recommendation, with the proposal it refers to. Kept for review; nothing changes automatically. */
+  saveFeedback: (f: Omit<ProposalFeedback, 'id' | 't' | 'by'>) => Promise<Result>;
   setReportStatus: (alertId: string, reportId: string, status: ExecutionStatus) => void;
   setResponseTab: (t: ResponseTab) => void;
   setLogFilters: (patch: Partial<LogFilters>) => void;
@@ -180,6 +219,9 @@ export interface State {
   /** Open an alert from the overview. Its read, acknowledgement and decision state stay as recorded. */
   focusAlert: (alertId: string, tab: ResponseTab) => void;
   setTimelineFocus: (id: string | null) => void;
+  setTimeline: (patch: Partial<Pick<State, 'timelineMode' | 'timelineScope' | 'storyFocus'>>) => void;
+  /** View issue history: the Timeline's story, scoped to that issue. */
+  openIssueHistory: (issueId: string) => void;
   setFlashEquipment: (id: string | null) => void;
   assessSeverity: (level: string, rationale: string) => Promise<Result>;
   setActivityTask: (id: string | null) => void;
@@ -245,10 +287,11 @@ export interface State {
   ensureCurrentRecord: () => IncidentRecord | undefined;
   addCorrection: (incidentId: string, originalId: string, text: string) => Promise<void>;
   addLesson: (incidentId: string, text: string) => Promise<void>;
-  closeIncident: (rationale: string, outstanding: string[], opts?: { snapshot?: boolean }) => Promise<Result>;
-  createSitrepVersion: (asOf: number) => Promise<void>;
+  closeIncident: (rationale: string, outstanding: string[], opts?: { snapshot?: boolean; generated?: SitrepSections }) => Promise<Result>;
+  /** A draft from the record as of a time; the Timeline workspace passes the sections it built from the same facts. */
+  createSitrepVersion: (asOf: number, generated?: SitrepSections) => Promise<void>;
   editSitrepSection: (versionId: string, key: SitrepSectionKey, text: string) => Promise<void>;
-  refreshSitrepDraft: (versionId: string, asOf: number) => Promise<void>;
+  refreshSitrepDraft: (versionId: string, asOf: number, generated?: SitrepSections) => Promise<void>;
   resolveSitrepPending: (versionId: string, key: SitrepSectionKey, take: 'mine' | 'new') => Promise<void>;
   submitSitrepReview: (versionId: string) => Promise<void>;
   approveSitrep: (versionId: string) => Promise<void>;
@@ -271,7 +314,7 @@ export const USER_LABEL = `${USER.name} · ${USER.role}`;
 /** Incident severity scale. No customer scale is configured, so an illustrative one is used and labelled as such. */
 export const SEVERITY_SCALE = { name: 'Illustrative tier scale (no customer scale configured)', levels: [{ id: 'tier-1', label: 'Tier 1', note: 'Handled with site resources' }, { id: 'tier-2', label: 'Tier 2', note: 'Needs support beyond the site' }, { id: 'tier-3', label: 'Tier 3', note: 'Needs corporate or external response' }] } as const;
 
-const SIM_DEFAULTS = { autoplay: false, watcherOverrides: {}, alertUser: {}, selectedAlertId: null, selectedInvestigationId: null, concernOrigin: null, responseTab: 'response' as ResponseTab, logFilters: EMPTY_FILTERS, viewer: null, viewerExpanded: false, activityTask: null, trendView: null, dismissedNotice: null };
+const SIM_DEFAULTS = { autoplay: false, watcherOverrides: {}, alertUser: {}, issueUser: {} as Record<string, IssueUserState>, placements: {} as Record<string, Placement>, userIssues: [] as UserIssue[], room: ROOM_DEFAULT, selectedAlertId: null, selectedInvestigationId: null, concernOrigin: null, responseTab: 'response' as ResponseTab, logFilters: EMPTY_FILTERS, viewer: null, viewerExpanded: false, activityTask: null, trendView: null, dismissedNotice: null };
 function noIncident() { return { ...SIM_DEFAULTS, incidentId: '', incidentMode: null as State['incidentMode'], startedAt: now(), skewMs: clockSkew(), revealedAt: [0], dashboard: [] as string[] }; }
 function newIncidentId(t: number) { const d = new Date(t); return `INC-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${d.getHours().toString().padStart(2, '0')}${d.getMinutes().toString().padStart(2, '0')}`; }
 function au(s: Pick<State, 'alertUser'>, id: string): AlertUserState { return s.alertUser[id] ?? { reports: [] }; }
@@ -313,8 +356,8 @@ export const useStore = create<State>()(persist((set, get) => {
   const invNumber = (r: IncidentRecord) => (r.investigations?.length ?? 0) + 1;
   const contextOf = (r: IncidentRecord, c: AssistantContext, extra: Partial<Investigation['context']> = {}): Investigation['context'] => ({ incidentId: r.id, ...(c.equipmentId ? { equipmentId: c.equipmentId } : {}), ...(c.alertId ? { alertId: c.alertId, alertTitle: r.events.find((e) => e.id === `alert-${c.alertId}`)?.title } : {}), ...extra });
   const patchInv = (r: IncidentRecord, invId: string, fn: (i: Investigation) => Investigation): IncidentRecord => ({ ...r, investigations: (r.investigations ?? []).map((i) => (i.id === invId ? fn(i) : i)) });
-  const simOf = (): SimSnapshot => { const s = get(); return { startedAt: s.startedAt, revealedAt: s.revealedAt, dashboard: s.dashboard, watcherOverrides: s.watcherOverrides as Record<string, unknown>, alertUser: s.alertUser as Record<string, unknown> }; };
-  const simState = (r: IncidentRecord): Partial<State> => ({ ...SIM_DEFAULTS, assistantSites: [r.site], assistantContext: {}, incidentId: r.id, incidentMode: r.sim ? r.mode : 'real', startedAt: r.sim?.startedAt ?? r.startedAt, revealedAt: r.sim?.revealedAt ?? [0], dashboard: r.sim?.dashboard ?? r.equipment, watcherOverrides: (r.sim?.watcherOverrides ?? {}) as Record<string, WatcherOverride>, alertUser: (r.sim?.alertUser ?? {}) as Record<string, AlertUserState>, skewMs: clockSkew() });
+  const simOf = (): SimSnapshot => { const s = get(); return { startedAt: s.startedAt, revealedAt: s.revealedAt, dashboard: s.dashboard, watcherOverrides: s.watcherOverrides as Record<string, unknown>, alertUser: s.alertUser as Record<string, unknown>, issueUser: s.issueUser as Record<string, unknown>, placements: s.placements as Record<string, unknown>, userIssues: s.userIssues }; };
+  const simState = (r: IncidentRecord): Partial<State> => ({ ...SIM_DEFAULTS, assistantSites: [r.site], assistantContext: {}, incidentId: r.id, incidentMode: r.sim ? r.mode : 'real', startedAt: r.sim?.startedAt ?? r.startedAt, revealedAt: r.sim?.revealedAt ?? [0], dashboard: r.sim?.dashboard ?? r.equipment, watcherOverrides: (r.sim?.watcherOverrides ?? {}) as Record<string, WatcherOverride>, alertUser: (r.sim?.alertUser ?? {}) as Record<string, AlertUserState>, issueUser: (r.sim?.issueUser ?? {}) as Record<string, IssueUserState>, placements: (r.sim?.placements ?? {}) as Record<string, Placement>, userIssues: (r.sim?.userIssues ?? []) as UserIssue[], skewMs: clockSkew() });
   const endRun = (r: IncidentRecord, status: AgentRun['status'], reason: string, by: string): IncidentRecord => {
     const run = currentRun(r);
     if (!run || run.endedAt != null) return r;
@@ -341,7 +384,7 @@ export const useStore = create<State>()(persist((set, get) => {
   return {
     ...noIncident(),
     agentDefaults: DEFAULT_AGENT_CONFIG, defaultsLog: [], dialog: null, settingsOpen: false, settingsTab: 'application', save: { state: 'idle' }, simulateSaveFailure: false, pendingNotification: null, drafts: {}, hiddenPanels: {},
-    responseTab: 'response', layout: DEFAULT_LAYOUT, prevLayout: null, theme: 'light', nav: 'situation', role: 'user', persona: 'shift-manager', overview: { scroll: 0, expanded: [], allAttention: false, fromOverview: false, chartSel: null, view: null, watcher: null, layout: 'brief', quick: null }, timelineFocus: null, flashEquipment: null, splits: {}, maximizedPanes: {}, assistantWidth: ASSISTANT_DEFAULT,
+    responseTab: 'response', layout: DEFAULT_LAYOUT, prevLayout: null, theme: 'light', nav: 'situation', role: 'user', persona: 'shift-manager', overview: { scroll: 0, expanded: [], allAttention: false, fromOverview: false, chartSel: null, view: null, watcher: null, layout: 'brief', quick: null }, timelineFocus: null, timelineMode: 'story', timelineScope: null, storyFocus: null, flashEquipment: null, splits: {}, maximizedPanes: {}, assistantWidth: ASSISTANT_DEFAULT,
     agentView: 'detailed', agentFilters: EMPTY_AGENT_FILTERS, agentGroup: 'chrono', agentSub: 'task', trendView: null,
     knowledgeView: 'search', knowledgeDoc: null, knowledgeIncident: null, simulateRetrievalFailure: false,
     assistantOpen: false, assistantSites: [], assistantTypes: [], assistantMessages: [], assistantMode: 'ask', assistantContext: {}, assistantScopeDefaulted: true, focusInvestigation: null, investigationProgress: null,
@@ -377,16 +420,32 @@ export const useStore = create<State>()(persist((set, get) => {
     },
     setAutoplay: (v) => set({ autoplay: v }),
     addEquipment: (id) => set((s) => (s.dashboard.includes(id) ? {} : { dashboard: [...s.dashboard, id] })),
+    resolveSuggestedEquipment: async (eqId, add) => {
+      const id = get().incidentId; const r = get().records[id];
+      if (!r?.intake?.suggested) return { ok: false, error: 'No suggestion' };
+      const by = userLabel(); const at = now();
+      const name = EQUIPMENT.find((x) => x.id === eqId)?.name ?? eqId;
+      const res = await commitChange(id, (x) => ({ ...x, equipment: add ? [...new Set([...x.equipment, eqId])] : x.equipment, intake: { ...x.intake, suggested: x.intake!.suggested!.map((s) => (s.id === eqId ? { ...s, status: add ? 'added' : 'dismissed', by, at } : s)) }, events: [...x.events, sysEvent('equipment', add ? `${eqId} ${name} added to Equipment watch (suggested by ECC, confirmed)` : `${eqId} ${name} not added (suggested by ECC, judged not relevant)`, { equipmentId: eqId, by, source: 'user' })] }));
+      if (res.ok && add) get().addEquipment(eqId);
+      return res;
+    },
     removeEquipment: (id) => set((s) => ({ dashboard: s.dashboard.filter((x) => x !== id) })),
     setWatcher: (id, o) => set((s) => ({ watcherOverrides: { ...s.watcherOverrides, [id]: { ...s.watcherOverrides[id], ...o } } })),
-    selectConcern: (invId, tab) => set((s) => ({ selectedInvestigationId: invId, selectedAlertId: null, concernOrigin: null, responseTab: tab ?? s.responseTab })),
-    openRecommendation: (alertId, originInv) => set((s) => ({ nav: 'situation', selectedAlertId: alertId, selectedInvestigationId: null, concernOrigin: originInv ?? null, responseTab: 'response', alertUser: { ...s.alertUser, [alertId]: { ...au(s, alertId), readAt: s.alertUser[alertId]?.readAt ?? now() } } })),
-    selectAlert: (id) => set((s) => ({ selectedAlertId: id, selectedInvestigationId: null, concernOrigin: null, alertUser: id ? { ...s.alertUser, [id]: { ...au(s, id), readAt: s.alertUser[id]?.readAt ?? now() } } : s.alertUser })),
+    selectConcern: (invId, tab) => set((s) => ({ room: invId ? { ...s.room, issue: null, update: `inv-${invId}`, focus: `inv-${invId}`, sub: 'main' } : s.room, selectedInvestigationId: invId, selectedAlertId: null, concernOrigin: null, responseTab: tab ?? s.responseTab })),
+    openRecommendation: (alertId, originInv) => set((s) => ({ nav: 'situation', room: { ...s.room, issue: null, update: alertId, focus: alertId, sub: 'main' }, selectedAlertId: alertId, selectedInvestigationId: null, concernOrigin: originInv ?? null, responseTab: 'response', alertUser: { ...s.alertUser, [alertId]: { ...au(s, alertId), readAt: s.alertUser[alertId]?.readAt ?? now() } } })),
+    selectAlert: (id) => set((s) => ({ room: id ? { ...s.room, issue: null, update: id, focus: id, sub: 'main' } : s.room, selectedAlertId: id, selectedInvestigationId: null, concernOrigin: null, alertUser: id ? { ...s.alertUser, [id]: { ...au(s, id), readAt: s.alertUser[id]?.readAt ?? now() } } : s.alertUser })),
     acknowledge: (id) => set((s) => ({ alertUser: { ...s.alertUser, [id]: { ...au(s, id), ackAt: now() } } })),
-    recordDecision: (id, d) => set((s) => ({ alertUser: { ...s.alertUser, [id]: { ...au(s, id), decision: d } } })),
+    recordDecision: (id, d) => set((s) => { const cur = au(s, id); return { alertUser: { ...s.alertUser, [id]: { ...cur, past: cur.decision ? [...(cur.past ?? []), cur.decision] : cur.past, decision: d } } }; }),
     addReport: (id, r) => set((s) => ({ alertUser: { ...s.alertUser, [id]: { ...au(s, id), reports: [...au(s, id).reports, r] } } })),
+    saveFeedback: async (f) => {
+      const id = get().incidentId; const t = now(); const by = userLabel();
+      const fb: ProposalFeedback = { ...f, id: `fb-${t}`, t, by };
+      return commitChange(id, (r) => ({ ...r, feedback: [...(r.feedback ?? []), fb], events: [...r.events, sysEvent('feedback', `Feedback on ECC's recommendation: “${f.comment}”`, { id: `feedback-${fb.id}`, t, detail: [`Recommendation (${f.proposal.version}): ${f.proposal.summary}`, f.reason ? `Reason: ${f.reason}` : '', f.evidence.length ? `Evidence cited: ${f.evidence.map((e) => `${e.label} Rev ${e.revision} p.${e.page}`).join('; ')}` : '', 'Kept for review by the ECC team; it does not change ECC automatically.'].filter(Boolean).join(' · '), by, source: 'user', alertId: f.proposal.alertId, meta: { issueId: f.issueId, reason: f.reason ?? null } })] }));
+    },
+    addContact: (id, c) => set((s) => ({ alertUser: { ...s.alertUser, [id]: { ...au(s, id), contacts: [...(au(s, id).contacts ?? []), c] } } })),
     setReportStatus: (alertId, reportId, status) => set((s) => ({ alertUser: { ...s.alertUser, [alertId]: { ...au(s, alertId), reports: au(s, alertId).reports.map((r) => (r.id === reportId ? { ...r, status } : r)) } } })),
-    setResponseTab: (t) => set({ responseTab: t }),
+    // The Situation Room shows sources as the panel's Evidence view.
+    setResponseTab: (t) => set((s) => ({ responseTab: t, room: { ...s.room, sub: t === 'sources' ? 'evidence' : 'main' } })),
     setLogFilters: (p) => set((s) => ({ logFilters: { ...s.logFilters, ...p } })),
     clearLogFilters: () => set({ logFilters: EMPTY_FILTERS }),
     toggleEquipmentFilter: (id) => set((s) => ({ logFilters: { ...s.logFilters, equipment: s.logFilters.equipment.includes(id) ? s.logFilters.equipment.filter((x) => x !== id) : [...s.logFilters.equipment, id] } })),
@@ -394,7 +453,8 @@ export const useStore = create<State>()(persist((set, get) => {
     setTrendView: (v) => set({ trendView: v }),
     setMaximizedPane: (id, pane) => set((s) => { const m = { ...s.maximizedPanes }; if (pane) m[id] = pane; else delete m[id]; return { maximizedPanes: m }; }),
     setAssistantWidth: (px) => set({ assistantWidth: Math.round(Math.min(ASSISTANT_MAX, Math.max(ASSISTANT_MIN, px))) }),
-    openViewer: (t) => set((s) => { const h = { ...s.hiddenPanels }; delete h['situation.document']; return { viewer: { dock: true, ...t }, viewerExpanded: t.dock === false ? true : s.viewerExpanded, hiddenPanels: h }; }),
+    // In the Situation Room a document always opens in the viewer dialog, over the issue it came from; elsewhere it docks unless asked not to.
+    openViewer: (t) => set((s) => { const h = { ...s.hiddenPanels }; delete h['situation.document']; const dialog = s.nav === 'situation' || t.dock === false; return { viewer: { ...t, dock: !dialog }, viewerExpanded: dialog ? true : s.viewerExpanded, hiddenPanels: h }; }),
     closeViewer: () => set((s) => { const h = { ...s.hiddenPanels }; delete h['situation.document']; return { viewer: null, viewerExpanded: false, hiddenPanels: h }; }),
     setViewerExpanded: (v) => set((s) => ({ viewerExpanded: v, viewer: !v && s.viewer && s.viewer.dock === false ? null : s.viewer })),
     setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...patch } })),
@@ -404,12 +464,33 @@ export const useStore = create<State>()(persist((set, get) => {
     }),
     swapSides: () => set((s) => ({ layout: { ...s.layout, monitoringSide: s.layout.monitoringSide === 'left' ? 'right' : 'left' } })),
     setTheme: (t) => set({ theme: t }),
-    setNav: (n) => set({ nav: n }),
+    // Arriving in the Situation Room from another tab opens it with the response drawer closed; an explicit issue link opens the drawer itself.
+    setNav: (n) => set((s) => (n === 'situation' && s.nav !== 'situation' ? { nav: n, room: { ...s.room, issue: null, update: null, focus: null, sub: 'main' } } : { nav: n })),
     setRole: (r) => set({ role: r }),
     signInAs: (p) => set((s) => ({ persona: p, nav: p === 'incident-manager' ? 'overview' : s.nav, overview: { ...s.overview, fromOverview: false, ...(p === 'incident-manager' ? { quick: null } : {}) } })),
     setOverview: (patch) => set((s) => ({ overview: { ...s.overview, ...patch } })),
-    focusAlert: (alertId, tab) => set((s) => { const h = { ...s.hiddenPanels }; delete h['situation.response']; return { nav: 'situation', selectedAlertId: alertId, selectedInvestigationId: null, concernOrigin: null, responseTab: tab, hiddenPanels: h, layout: s.layout.maximized && s.layout.maximized !== 'response' ? { ...(s.prevLayout ?? s.layout), maximized: null } : s.layout }; }),
-    setTimelineFocus: (id) => set({ timelineFocus: id }),
+    setRoom: (patch) => set((s) => ({ room: { ...s.room, ...patch } })),
+    openIssue: (id, o = {}) => set((s) => ({ nav: 'situation', room: { ...s.room, issue: id, update: null, focus: o.focus ?? null, sub: 'main', view: s.room.view, list: s.issueUser[id]?.closed ? 'closed' : s.room.list }, overview: o.from === 'overview' ? { ...s.overview, fromOverview: true } : s.overview })),
+    openUpdate: (updateId, o = {}) => set((s) => ({ nav: 'situation', room: { ...s.room, issue: null, update: updateId, focus: updateId, sub: 'main' }, overview: o.from === 'overview' ? { ...s.overview, fromOverview: true } : s.overview })),
+    closeRoomPanel: () => set((s) => ({ room: { ...s.room, issue: null, update: null, focus: null, sub: 'main' } })),
+    showEquipmentUpdates: (equipmentId) => set((s) => ({ nav: 'situation', selectedAlertId: null, room: { ...s.room, issue: null, update: null, focus: null, sub: 'main', view: 'updates', feedEquipment: equipmentId, feedIssue: null, origin: 'all' } })),
+    markIssueSeen: (id, t) => set((s) => (s.issueUser[id]?.lastSeen != null && s.issueUser[id]!.lastSeen! >= t ? {} : { issueUser: { ...s.issueUser, [id]: { ...(s.issueUser[id] ?? { history: [] }), lastSeen: t } } })),
+    placeUpdate: (updateId, to, label, toTitle) => {
+      const by = userLabel(); const at = now();
+      let id: string; let title = toTitle ?? '';
+      if (typeof to === 'string') id = to;
+      else { id = `u-${get().userIssues.length + 1}`; title = to.title; set((s) => ({ userIssues: [...s.userIssues, { id, title: to.title, t: at, by, from: updateId, equipmentId: to.equipmentId }] })); }
+      set((s) => ({ placements: { ...s.placements, [updateId]: { to: id, by, at, label, toTitle: id === 'info' ? 'Information only' : title } } }));
+      return id;
+    },
+    closeIssue: (id, title, note) => set((s) => { const t = now(); const by = userLabel(); const u = s.issueUser[id] ?? { history: [] }; return { issueUser: { ...s.issueUser, [id]: { ...u, lastSeen: t, closed: { t, by, note }, history: [...u.history, { kind: 'closed', t, by, note, title }] } } }; }),
+    reopenIssue: (id, title, note) => set((s) => { const t = now(); const by = userLabel(); const u = s.issueUser[id] ?? { history: [] }; return { issueUser: { ...s.issueUser, [id]: { ...u, lastSeen: t, closed: null, history: [...u.history, { kind: 'reopened', t, by, note, title }] } }, room: { ...s.room, list: 'open' } }; }),
+    focusAlert: (alertId, tab) => set((s) => { const h = { ...s.hiddenPanels }; delete h['situation.response']; return { nav: 'situation', room: { ...s.room, issue: null, update: alertId, focus: alertId, sub: 'main' }, selectedAlertId: alertId, selectedInvestigationId: null, concernOrigin: null, responseTab: tab, hiddenPanels: h, layout: s.layout.maximized && s.layout.maximized !== 'response' ? { ...(s.prevLayout ?? s.layout), maximized: null } : s.layout }; }),
+    // A request to show a particular record entry opens the full record at it.
+    // Links into the Timeline land on the moment that holds the entry, with its history open.
+    setTimelineFocus: (id) => set(id === null ? { timelineFocus: null } : { timelineFocus: id, storyFocus: id, timelineScope: null }),
+    setTimeline: (patch) => set((s) => ({ ...s, ...patch })),
+    openIssueHistory: (issueId) => set({ nav: 'sitrep', timelineMode: 'story', timelineScope: issueId, storyFocus: null }),
     setFlashEquipment: (id) => set({ flashEquipment: id }),
     assessSeverity: async (level, rationale) => {
       const id = get().incidentId; const lv = SEVERITY_SCALE.levels.find((x) => x.id === level);
@@ -529,13 +610,19 @@ export const useStore = create<State>()(persist((set, get) => {
       const training = input.mode === 'training';
       const dashboard = training ? [...DEFAULT_DASHBOARD] : input.equipment;
       const clk = (x: number) => clock(x);
+      // Intake: keep what was said and how sure it was. ECC suggests other equipment in the same area; a person confirms it.
+      const it = input.intake;
+      const areas = [...new Set([it?.area, ...input.equipment.map((e) => EQUIPMENT.find((x) => x.id === e)?.area)].filter(Boolean) as string[])];
+      const suggested = training || !it ? undefined : EQUIPMENT.filter((e) => areas.includes(e.area) && !input.equipment.includes(e.id)).slice(0, 3).map((e) => ({ id: e.id, reason: `In the ${e.area} area${input.equipment.length ? `, with ${input.equipment.join(', ')}` : ''}`, status: 'pending' as const }));
+      const intake: Intake | undefined = it ? { ...it, suggested } : undefined;
       const events: RecordEvent[] = [
-        { id: 'notification', t: occurredAt, recordedAt: t, kind: 'notification', title: `Initial notification: ${input.title}`, detail: `${input.site} · reported via ${input.via}${input.notification ? ` · ${input.notification}` : ''}`, source: 'field' },
+        { id: 'notification', t: occurredAt, recordedAt: t, kind: 'notification', title: `Initial notification: ${input.title}`, detail: `${input.site} · reported via ${input.via}${input.notification ? ` · ${input.notification}` : ''}${it?.occurredApprox ? ' · time approximate' : ''}`, source: 'field' },
         { id: 'record-created', t, recordedAt: t, kind: 'lifecycle', title: 'Incident record created', detail: `Occurred ${clk(occurredAt)} · recorded ${clk(t)}${input.location ? ` · location ${input.location}` : ''}`, source: 'user', by: userLabel() },
       ];
+      if (it) events.push({ id: 'intake-equipment', t, recordedAt: t, kind: 'equipment', title: input.equipment.length ? `Equipment that may be involved: ${input.equipment.map((e) => `${e} ${EQUIPMENT.find((x) => x.id === e)?.name ?? ''}`.trim()).join(', ')} (named at intake, not verified)` : 'Equipment not yet identified', detail: [it.place ? `Location: ${it.place}${it.placeApprox ? ' (approximate)' : ''}` : '', it.area ? `Area: ${it.area}` : 'Area not stated', suggested?.length ? `ECC suggests also checking: ${suggested.map((x) => x.id).join(', ')} (awaiting confirmation)` : ''].filter(Boolean).join(' · '), source: 'user', by: userLabel() });
       if (input.basedOn) events.push({ id: 'based-on', t, recordedAt: t, kind: 'reference', title: `Started with reference to ${input.basedOn.id}: ${input.basedOn.title}`, detail: 'Historical precedent only. No decisions, measurements or actions were copied into this incident.', source: 'user', by: userLabel() });
-      const record: IncidentRecord = { schema: 'ecc-incident/1', id, title: input.title, site: input.site, mode: input.mode, provenance: 'live', startedAt: occurredAt, occurredAt, createdAt: t, notification: { text: input.notification, via: input.via }, location: input.location, incidentType: input.incidentType, status: 'active', reportedBy: input.via, equipment: dashboard, events, reportVersions: [], lessons: [], references: [], agentRuns: [], agentConfig: config, basedOn: input.basedOn, updatedAt: t };
-      const res = await commit(record, { ...SIM_DEFAULTS, incidentId: id, incidentMode: input.mode, startedAt: occurredAt, skewMs: clockSkew(), revealedAt: [0], dashboard, assistantMessages: [], assistantSites: [input.site], assistantContext: {}, nav: 'situation', knowledgeIncident: null, dialog: null, pendingNotification: get().pendingNotification?.title === input.title ? null : get().pendingNotification });
+      const record: IncidentRecord = { schema: 'ecc-incident/1', id, title: input.title, site: input.site, mode: input.mode, provenance: 'live', startedAt: occurredAt, occurredAt, createdAt: t, notification: { text: input.notification, via: input.via }, location: input.location, incidentType: input.incidentType, intake, status: 'active', reportedBy: it?.reportedBy || input.via, equipment: dashboard, events, reportVersions: [], lessons: [], references: [], agentRuns: [], agentConfig: config, basedOn: input.basedOn, updatedAt: t };
+      const res = await commit(record, { ...SIM_DEFAULTS, incidentId: id, incidentMode: input.mode, startedAt: occurredAt, skewMs: clockSkew(), revealedAt: [0], dashboard, assistantMessages: [], assistantSites: [input.site], assistantContext: {}, nav: training ? 'situation' : 'overview', overview: { ...get().overview, scroll: 0, fromOverview: false, quick: null }, knowledgeIncident: null, dialog: null, pendingNotification: get().pendingNotification?.title === input.title ? null : get().pendingNotification });
       if (!res.ok) return res;
       if (config.autoStart) await get().agentStart({ auto: true });
       return { ok: true };
@@ -695,30 +782,30 @@ export const useStore = create<State>()(persist((set, get) => {
       const by = userLabel(); const t = now();
       let r = r0;
       if (opts?.snapshot) {
-        const gen = generateSitrep(r, t);
-        const v: ReportVersion = { id: `sr-${t}`, number: r.reportVersions.length + 1, createdAt: t, asOf: t, status: 'draft', author: `ECC agent (final snapshot, draft) · ${by}`, generated: gen, sections: { ...gen } };
-        r = { ...r, reportVersions: [...r.reportVersions, v], events: [...r.events, sysEvent('report-version', `SITREP ${v.number} final snapshot created · draft, not approved`, { versionId: v.id, number: v.number, status: 'draft', asOf: t } as Partial<RecordEvent>)] };
+        const gen = opts.generated ?? generateSitrep(r, t);
+        const v: ReportVersion = { id: `sr-${t}`, number: r.reportVersions.length + 1, createdAt: t, asOf: t, status: 'draft', author: `Generated by ECC at closure · ${by}`, generated: gen, sections: { ...gen } };
+        r = { ...r, reportVersions: [...r.reportVersions, v], events: [...r.events, sysEvent('report-version', `Final Sit. Rep generated at closure · as of ${clock(t)}`, { versionId: v.id, number: v.number, status: 'draft', asOf: t } as Partial<RecordEvent>)] };
       }
       const last = r.reportVersions[r.reportVersions.length - 1];
-      const sitrep = last ? `SITREP ${last.number} · ${last.status === 'approved' ? 'approved' : last.status === 'review' ? 'in review, not approved' : 'draft, not approved'}` : 'No SITREP';
+      const sitrep = last ? `Latest Sit. Rep as of ${clock(last.asOf)}${last.status === 'approved' ? ' (approved under the earlier workflow)' : ''}` : 'No Sit. Rep';
       const run = currentRun(r);
       if (run && run.endedAt == null) { r = endRun(r, 'completed', 'Incident closed', by); r = { ...r, events: [...r.events, sysEvent('agent-control', `Agent work ended at closure · run ${run.number}`, { detail: 'Final run status preserved. Site-wide systems are not affected by closing this record.', meta: { agentRun: run.number } })] }; }
       const rec: IncidentRecord = { ...r, status: 'closed', sim: simOf(), closure: { t, by, rationale, outstanding, sitrep }, events: [...r.events, sysEvent('closure', 'Incident closed', { detail: rationale, rationale, outstanding } as Partial<RecordEvent>)] };
       return commit(rec, { dialog: { type: 'closed', id: rec.id } });
     },
-    createSitrepVersion: async (asOf) => {
+    createSitrepVersion: async (asOf, generated) => {
       await mutate(get().incidentId, (r) => {
-        const gen = generateSitrep(r, asOf);
-        const v: ReportVersion = { id: `sr-${now()}`, number: r.reportVersions.length + 1, createdAt: now(), asOf, status: 'draft', author: 'ECC agent (draft) · ' + userLabel(), generated: gen, sections: { ...gen } };
-        return { ...r, reportVersions: [...r.reportVersions, v], events: [...r.events, sysEvent('report-version', `SITREP ${v.number} draft created · as of ${clock(asOf)}`, { versionId: v.id, number: v.number, status: 'draft', asOf } as Partial<RecordEvent>)] };
+        const gen = generated ?? generateSitrep(r, asOf);
+        const v: ReportVersion = { id: `sr-${now()}`, number: r.reportVersions.length + 1, createdAt: now(), asOf, status: 'draft', author: 'Generated by ECC · ' + userLabel(), generated: gen, sections: { ...gen } };
+        return { ...r, reportVersions: [...r.reportVersions, v], events: [...r.events, sysEvent('report-version', `Sit. Rep generated · as of ${clock(asOf)}`, { versionId: v.id, number: v.number, status: 'draft', asOf } as Partial<RecordEvent>)] };
       });
     },
     editSitrepSection: async (versionId, key, text) => {
       await mutate(get().incidentId, (r) => ({ ...r, reportVersions: r.reportVersions.map((v) => (v.id === versionId && v.status !== 'approved' ? { ...v, sections: { ...v.sections, [key]: text } } : v)) }));
     },
-    refreshSitrepDraft: async (versionId, asOf) => {
+    refreshSitrepDraft: async (versionId, asOf, generated) => {
       await mutate(get().incidentId, (r) => {
-        const gen = generateSitrep(r, asOf);
+        const gen = generated ?? generateSitrep(r, asOf);
         return { ...r, reportVersions: r.reportVersions.map((v) => {
           if (v.id !== versionId || v.status === 'approved') return v;
           const sections: SitrepSections = { ...v.sections }; const pending: Partial<SitrepSections> = { ...v.pending };

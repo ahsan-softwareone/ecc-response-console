@@ -1,6 +1,7 @@
 // Incident Overview: a briefing built only from the incident record and current (simulated) readings, as of now.
 // Nothing here writes to the record. Every statement keeps its source and a link to its evidence.
 import { EQUIPMENT } from '../data/scenario';
+import { DECISION_LABEL } from '../lib/derive';
 import { analysisOf, outcomeOf } from '../investigate/followThrough';
 import { activeRecommendations, gapStatus, supersessionOf } from '../record/timeline';
 import type { AlertEvent, DecisionEvent, IncidentRecord, PinnedEvidence, RecordEvent, RecommendationEvent } from '../record/types';
@@ -330,7 +331,7 @@ export function facts(r: IncidentRecord, asOf: number, readings: Reading[], pic:
   // Response: what was decided or reported done, kept apart from what is only proposed.
   const rp: string[] = []; const rsrc: Src[] = [];
   const decisions = known.filter((e): e is DecisionEvent => e.kind === 'decision');
-  for (const d of decisions.slice(-2)) { const sup = supersessionOf(r, d.alertId, asOf); rp.push(`${d.status === 'approved' ? 'Approved' : d.status === 'deferred' ? 'Deferred' : 'Declined'}: ${firstClause(d.recommendationSummary)} (${fmt(d.t)}, ${d.by?.split(' · ')[1] ?? 'recorded'}${sup && sup.t > d.t ? '; since superseded' : ''})`); rsrc.push({ label: `Decision ${fmt(d.t)}`, target: targetOf(r, d) }); }
+  for (const d of decisions.slice(-2)) { const sup = supersessionOf(r, d.alertId, asOf); rp.push(`${DECISION_LABEL[d.status]}: ${firstClause(d.status === 'alternative' && d.response ? d.response : d.recommendationSummary)} (${fmt(d.t)}, ${d.by?.split(' · ')[1] ?? 'recorded'}${sup && sup.t > d.t ? '; since superseded' : ''})`); rsrc.push({ label: `Decision ${fmt(d.t)}`, target: targetOf(r, d) }); }
   for (const rep of known.filter((e) => e.kind === 'report').slice(-2)) { rp.push(`Reported: ${firstClause(rep.title)} (${fmt(rep.t)}, ${(rep as { status?: string }).status === 'verified' ? 'verified' : 'not verified'})`); rsrc.push({ label: srcLabel('Reported action', rep.t), target: targetOf(r, rep) }); }
   const awaiting = activeRecommendations(r, asOf).filter((x) => !decided(r, x.alertId, asOf));
   if (!decisions.length && !known.some((e) => e.kind === 'report')) rp.push('No decision or field action has been recorded');
@@ -440,9 +441,10 @@ export function milestones(r: IncidentRecord, asOf: number, cap = 8, watcherOf?:
       : alert?.evidenceStatus === 'verified' ? [...recs].filter((x) => x.kind === 'observation' && x.meta?.obsKind === 'reading' && x.equipmentId === alert.equipmentId && x.t <= alert.t).pop() ?? a
       : a;
     let headline = String(alert?.meta?.headline ?? ''), qualifier = alert?.meta?.qualifier ? String(alert.meta.qualifier) : undefined;
-    if (a.kind === 'decision') { const dd = a as DecisionEvent; headline = `${dd.status === 'approved' ? 'Approved' : dd.status === 'deferred' ? 'Deferred' : 'Declined'}: ${firstClause(dd.recommendationSummary)}`; qualifier = `Decision recorded · ${dd.by?.split(' · ')[1] ?? dd.by ?? 'recorded'}`; }
-    else if (a.kind === 'observation' && a.meta?.userSubmitted) { headline = `Reported: ${firstClause(a.title)}`; qualifier = `Reported by ${a.meta?.sourceLabel ?? 'user'}; not verified`; }
-    else if (a.kind === 'report') { headline = `Reported: ${firstClause(a.title)}`; qualifier = (a as { status?: string }).status === 'verified' ? 'Verified' : 'Not verified'; }
+    // Short headlines; the full wording, sources and rationale open with the event.
+    if (a.kind === 'decision') { const dd = a as DecisionEvent; headline = decisionHeadline(dd); qualifier = `By ${(dd.by ?? 'the Incident Manager').split(' · ')[0]}${dd.rationale || a.detail ? ' · reason recorded' : ''}`; }
+    else if (a.kind === 'observation' && a.meta?.userSubmitted) { headline = `Reported: ${shortHead(a.title)}`; qualifier = `${a.meta?.sourceLabel ?? 'Report'}; not verified`; }
+    else if (a.kind === 'report') { headline = `Reported: ${shortHead(a.title)}`; qualifier = (a as { status?: string }).status === 'verified' ? 'Verified' : 'Not verified'; }
     else if (!headline) headline = a.kind === 'notification' ? firstClause(r.notification?.text ?? a.title.replace(/^Initial notification: /, '')) : headline_(a.title);
     const why = alert?.meta?.why ? [String(alert.meta.why), ...(alert.meta.consequence ? [String(alert.meta.consequence)] : [])] : a.kind === 'decision' && a.detail ? [`Rationale recorded: ${a.detail}`] : [];
     return { id: d.id, t: d.t, headline, qualifier, critical: recs.some((x) => x.kind === 'alert' && (x as AlertEvent).severity === 'critical' && x === a), why, key: toRec(key), records: recs.filter((x) => x !== key).map(toRec), equipmentId: d.eq };
@@ -478,22 +480,28 @@ export function statusCards(r: IncidentRecord, asOf: number, order: string[], ma
  */
 export function situationHead(r: IncidentRecord, asOf: number, cards: Card[], lead: Attention | undefined, seq: Sequence, pendingVerification: number): { headline: string; para: string; concern?: string } {
   const known = r.events.filter((e) => e.t <= asOf);
+  // Before any alert, the briefing is what was reported at intake, with its uncertainty.
+  if (r.intake && !known.some((e) => e.kind === 'alert')) return { headline: intakeHeadline(r), para: '' };
   const byId = (id: string) => known.find((e) => e.id === `alert-${id}`) as AlertEvent | undefined;
   const sentence = (c: Card) => { const a = byId(c.alertId); return String(a?.meta?.brief ?? `${c.name} (${c.eq}): ${c.condition.charAt(0).toLowerCase()}${c.condition.slice(1)}`); };
-  const last = seq.ms[seq.ms.length - 1];
-  const lastAlert = last ? (known.find((e) => e.id === last.id.replace(/^ms-/, '')) as AlertEvent | undefined) : undefined;
+  // The latest condition: the newest milestone that is an alert. A report made in ECC enters through materialReport below.
+  const evOf = (m: (typeof seq.ms)[number]) => known.find((e) => e.id === m.id.replace(/^ms-/, ''));
+  const last = [...seq.ms].reverse().find((m) => evOf(m)?.kind === 'alert') ?? seq.ms[seq.ms.length - 1];
+  const lastAlert = last ? (evOf(last) as AlertEvent | undefined) : undefined;
   const lastCard = last?.equipmentId ? cards.find((c) => c.eq === last.equipmentId && c.alertId === String(lastAlert?.meta?.alertId)) : undefined;
   const s1 = lastCard ? sentence(lastCard) : String(lastAlert?.meta?.brief ?? last?.headline ?? r.title);
   const leadEq = lead?.target.kind === 'alert' ? byId((lead.target as { alertId: string }).alertId)?.equipmentId : undefined;
   const concern = cards.find((c) => c.eq === leadEq && c.eq !== last?.equipmentId) ?? cards.find((c) => c.wait && c.eq !== last?.equipmentId && c.severity === 'critical');
   const s2 = concern ? sentence(concern) : '';
-  const awaiting = activeRecommendations(r, asOf).filter((x) => !decided(r, x.alertId, asOf)).length;
+  void pendingVerification;
+  // What is happening, not what to do: pending decisions and checks belong to Requires attention.
   const damage = known.some((e) => e.kind === 'alert' && (e as AlertEvent).severity === 'critical');
-  const p: string[] = [];
-  p.push(awaiting ? `${awaiting === 1 ? 'One recommendation awaits' : `${awaiting} recommendations await`} a decision` : 'No recommendation is awaiting a decision');
-  if (pendingVerification) p.push(`${pendingVerification === 1 ? 'one field report awaits' : `${pendingVerification} field reports await`} independent verification`);
-  const para = `${p.join(', and ')}.${damage ? '' : ' No equipment damage has been reported.'}`;
-  return { headline: `${s1}.${s2 && s2 !== s1 ? ` ${s2}.` : ''}`.replace(/\.\./g, '.'), para: para.charAt(0).toUpperCase() + para.slice(1), concern: s2 && s2 !== s1 ? s2 : undefined };
+  const para = damage ? '' : 'No equipment damage has been reported.';
+  // A report made in ECC enters the headline when it changes the picture: it conflicts with the readings, uses urgent
+  // wording, or concerns something no alert covers. It is quoted, with its qualifier beside it.
+  const report = materialReport(r, asOf, last?.t ?? 0);
+  const lines = [report, `${s1}.`, s2 && s2 !== s1 ? `${s2}.` : ''].filter(Boolean).slice(0, 2).map((x) => x.replace(/\.\.$/, '.'));
+  return { headline: lines.join(' '), para, concern: s2 && s2 !== s1 ? s2 : undefined };
 }
 
 /** Short title for an attention item: what to do, not the full recommendation text. */
@@ -554,4 +562,55 @@ export function leaderBrief(r: IncidentRecord, asOf: number, cards: Card[], lead
   ];
   const plain = [`Executive brief · ${context.join(' · ')}`, '', ...sections.flatMap((s) => [s.label, s.text, '']), `Source: ECC incident record ${r.id}, as of ${fmt(asOf)}. Reported items are not independently verified unless stated; readings are simulated in this training exercise.`.replace(/; readings are simulated in this training exercise/, r.mode === 'training' ? '; readings are simulated in this training exercise' : '')].join('\n');
   return { asOf, context, sections, plain };
+}
+
+/** The newest report made in ECC that materially changes the incident picture, as one sentence with its qualifier, or ''. */
+function materialReport(r: IncidentRecord, asOf: number, since: number): string {
+  const alertEq = new Set(r.events.filter((e) => e.kind === 'alert' && e.t <= asOf && e.equipmentId).map((e) => e.equipmentId!));
+  const invs = (r.investigations ?? []).filter((i) => i.kind === 'observation' && i.t <= asOf && i.t >= since).sort((a, b) => b.t - a.t);
+  for (const i of invs) {
+    const conflict = outcomeOf(i)?.kind === 'conflict';
+    const fresh = !i.context.equipmentId || !alertEq.has(i.context.equipmentId);
+    if (!conflict && !i.urgentWording && !fresh) continue;
+    const who = i.by.split(' · ')[0];
+    const q = i.text.trim().replace(/[.!]+$/, '');
+    return `Reported${conflict ? ', and conflicting with readings' : ', not verified'}: “${q}” (${who}${i.context.equipmentId ? `, ${i.context.equipmentId}` : ''}).`;
+  }
+  return '';
+}
+
+/** One sentence from the intake: what was reported, where, and which equipment, saying plainly what is not yet known. */
+export function intakeHeadline(r: IncidentRecord): string {
+  const it = r.intake ?? {};
+  const type = r.incidentType && r.incidentType !== 'Not sure' ? r.incidentType : 'An incident of unknown type';
+  const eq = r.equipment.filter((id) => !(it.suggested ?? []).some((s) => s.id === id && s.status === 'added'));
+  const named = eq.map((id) => `${id} ${EQUIPMENT.find((x) => x.id === id)?.name ?? ''}`.trim());
+  const where = it.place
+    ? `${it.placeApprox ? 'near' : 'at'} ${placePhrase(it.place)}${it.placeApprox ? ' (approximate)' : ''}`
+    : named.length ? `at ${named.join(' and ')}` : it.area ? `in the ${it.area} area` : 'location not yet confirmed';
+  // A described place is more specific than the area, so the area is added only to an equipment location.
+  const area = it.area && !it.place && named.length && !where.toLowerCase().includes(it.area.toLowerCase()) ? `, ${it.area} area` : '';
+  const equipment = it.place && named.length ? `; ${named.join(' and ')} may be involved` : !named.length ? '; equipment not yet identified' : '';
+  return `${type} reported ${where}${area}${equipment}.`;
+}
+
+/** A described place read naturally after “at” or “near”: “north side of the propane area” becomes “the north side of the propane area”. */
+export function placePhrase(place: string): string {
+  const p = place.trim().replace(/^(at|near)\s+/i, '');
+  return /^(the|a|an)\s/i.test(p) || /^[A-Z]{1,3}-?\d/.test(p) || /^[A-Z]/.test(p) ? p : `the ${p}`;
+}
+
+/** A decision in a few words: which recommendation, and what was decided. “Fire-response recommendation declined.” */
+const TOPICS: [RegExp, string][] = [[/fire response|fire at|the fire\b/i, 'Fire-response'], [/deluge/i, 'Deluge'], [/depressuri[sz]/i, 'Depressurization'], [/cooling/i, 'Cooling'], [/isolat/i, 'Isolation'], [/personnel|evacuat|muster/i, 'Personnel'], [/stabili[sz]/i, 'Stabilization']];
+export function decisionHeadline(d: DecisionEvent): string {
+  const text = d.recommendationSummary ?? d.title;
+  const topic = TOPICS.find(([re]) => re.test(text))?.[1] ?? firstClause(text).split(' ').slice(0, 3).join(' ');
+  const verb = d.status === 'approved' ? 'accepted' : d.status === 'declined' ? 'declined' : d.status === 'deferred' ? 'deferred' : '';
+  return verb ? `${topic} recommendation ${verb}` : `Different response to the ${topic.toLowerCase()} recommendation`;
+}
+/** A headline that fits a milestone: the first clause, cut at a word near 52 characters. */
+function shortHead(t: string): string {
+  const c = firstClause(t).replace(/\.$/, '');
+  if (c.length <= 52) return c;
+  const cut = c.slice(0, 52); return `${cut.slice(0, cut.lastIndexOf(' '))}…`;
 }

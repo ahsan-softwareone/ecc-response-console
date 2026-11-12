@@ -20,7 +20,7 @@ export function EvidenceChips({ evidence, origin }: { evidence?: PinnedEvidence[
   );
 }
 
-export function TimelineView({ record, editable, onCountChange, testId = 'timeline' }: { record: IncidentRecord; editable?: boolean; onCountChange?: (shown: number, total: number, filtered: boolean) => void; testId?: string }) {
+export function TimelineView({ record, editable, onCountChange, testId = 'timeline', only, onKnownAt }: { record: IncidentRecord; editable?: boolean; onCountChange?: (shown: number, total: number, filtered: boolean) => void; testId?: string; /** Rows only, for these record entries (a Timeline history group): no search, filter or order controls. */ only?: string[]; /** In a group: show the Timeline as it was known at a decision. */ onKnownAt?: (t: number) => void }) {
   const [query, setQuery] = useState('');
   const [cats, setCats] = useState<Category[]>([]);
   const [asOf, setAsOf] = useState<number | null>(null);
@@ -37,15 +37,15 @@ export function TimelineView({ record, editable, onCountChange, testId = 'timeli
   const focus = useStore((s) => s.timelineFocus);
   const setTimelineFocus = useStore((s) => s.setTimelineFocus);
   useEffect(() => { if (!focus) return; const el = document.querySelector(`[data-testid="${testId}"] [data-event="${CSS.escape(focus)}"]`); if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('focus-flash'); window.setTimeout(() => el.classList.remove('focus-flash'), 2400); } setTimelineFocus(null); }, [focus, testId, setTimelineFocus]);
-  const rows = useMemo(() => timeline(record, { query, categories: cats, asOf: asOf ?? undefined }, newestFirst), [record, query, cats, asOf, newestFirst]);
+  const rows = useMemo(() => { if (only) { const keep = new Set(only); return timeline(record, {}, false).filter((x) => keep.has(x.ev.id)); } return timeline(record, { query, categories: cats, asOf: asOf ?? undefined }, newestFirst); }, [record, query, cats, asOf, newestFirst, only]);
   const filtered = !!(query || cats.length || asOf != null);
   const total = record.events.length;
   useEffect(() => { onCountChange?.(rows.length, total, filtered); }, [rows.length, total, filtered, onCountChange]);
   const present = CATEGORIES.filter((c) => record.events.some((e) => CATEGORY[e.kind] === c));
 
   return (
-    <div className="tlv" data-testid={testId} data-shown={rows.length} data-total={total} data-filtered={filtered}>
-      <div className="tlv-bar">
+    <div className={`tlv ${only ? 'rows-only' : ''}`} data-testid={testId} data-shown={rows.length} data-total={total} data-filtered={filtered}>
+      {!only && <div className="tlv-bar">
         <div className="search" style={{ border: 0, padding: 0, flex: 1 }}><Icon name="search" size={15} /><input className="input" placeholder="Search the timeline" value={query} onChange={(e) => setQuery(e.target.value)} data-testid="timeline-search" /></div>
         <Popover width={260} trigger={(open, toggle) => <button className={`btn sm ${cats.length ? 'primary' : ''}`} onClick={toggle} aria-expanded={open} data-testid="timeline-filter"><Icon name="filter" size={13} /> {cats.length ? `${cats.length} categories` : 'Categories'}</button>}>
           {() => (
@@ -56,8 +56,8 @@ export function TimelineView({ record, editable, onCountChange, testId = 'timeli
           )}
         </Popover>
         <button className="btn sm" onClick={() => setNewestFirst((v) => !v)} title="Toggle order">{newestFirst ? 'Newest first' : 'Oldest first'}</button>
-      </div>
-      {(filtered || asOf != null) && (
+      </div>}
+      {!only && (filtered || asOf != null) && (
         <div className="tlv-note" data-testid="timeline-filter-note">
           <Icon name="filter" size={13} />
           <span>Showing {rows.length} of {total} entries{asOf != null ? ` known at ${clock(asOf)}` : ''}. Downloads and exports always include all {total}.</span>
@@ -84,12 +84,12 @@ export function TimelineView({ record, editable, onCountChange, testId = 'timeli
               {ev.kind === 'observation' && ev.meta?.investigationId && (() => { const inv = record.investigations?.find((i) => i.id === ev.meta!.investigationId); const r = inv && latestOf(inv); if (!inv) return null; return (
                 <div data-testid="timeline-followthrough">
                   <div className="m" data-testid="timeline-analysis">{followThroughLine(inv)}</div>
-                  {isCurrent ? <button className="link" style={{ fontSize: 11.5, marginRight: 10 }} onClick={() => { selectConcern(inv.id, 'response'); setNav('situation'); }} data-testid="open-concern">Open in Investigation</button>
+                  {isCurrent ? <button className="link" style={{ fontSize: 11.5, marginRight: 10 }} onClick={() => { setNav('situation'); selectConcern(inv.id, 'response'); }} data-testid="open-concern">Open in Investigation</button>
                     : r && <details className="inv-more" data-testid="history-assessment"><summary>Assessment · as of {clock(r.asOf)}</summary><p className="inv-finding">{r.finding}</p>{r.missing.length > 0 && <div className="m">Missing: {r.missing.join('; ')}</div>}{r.conflicts.map((c, i) => <div key={i} className="m">Conflict: {c.a} / {c.b}</div>)}{inv.clarification?.answeredAt && <div className="m">Clarification: {inv.clarification.question} {[inv.clarification.answer, inv.clarification.answerLocation, inv.clarification.answerText].filter(Boolean).join(' · ')}</div>}<EvidenceChips evidence={r.documents} origin={`${record.id} · Investigation ${inv.number}`} /></details>}
                 </div>
               ); })()}
               {isCurrent && ev.meta?.investigationId && ev.kind !== 'agent' && <button className="link" style={{ fontSize: 11.5, marginRight: 10 }} onClick={() => openAssistantFor({ focus: String(ev.meta!.investigationId) })} data-testid="open-exchange">Open full exchange</button>}
-              {ev.kind === 'decision' && <button className="link" style={{ fontSize: 11.5 }} onClick={() => setAsOf(ev.t)} data-testid="known-at">Show what was known at {clock(ev.t)} ({(ev as { knownEventCount?: number }).knownEventCount ?? '…'} entries)</button>}
+              {ev.kind === 'decision' && (!only || onKnownAt) && <button className="link" style={{ fontSize: 11.5 }} onClick={() => (onKnownAt ? onKnownAt(ev.t) : setAsOf(ev.t))} data-testid="known-at">Show what was known at {clock(ev.t)} ({(ev as { knownEventCount?: number }).knownEventCount ?? '…'} entries)</button>}
               {correctedBy && <div className="m" style={{ color: 'var(--high-ink)' }}>Corrected {clock(correctedBy.t)}: {correctedBy.title} — original retained above</div>}
               {editable && ev.kind !== 'correction' && !correctedBy && (
                 correcting === ev.id ? (

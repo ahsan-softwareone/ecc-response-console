@@ -2,9 +2,10 @@
 // into append-only incident-record events. Runs continuously while an incident is
 // active; after that the record renders on its own without scenario.ts.
 import { EMERGENCY_META, WATCHERS } from '../data/scenario';
-import type { Derived } from '../lib/derive';
+import { decisionTitle, type Derived } from '../lib/derive';
 import { formatValue, sampleAt, type Clock } from '../lib/series';
-import type { AlertUserState } from '../store';
+import type { AlertUserState, Contact, IssueUserState, Placement, UserIssue } from '../store';
+import { clock } from '../lib/time';
 import type { AgentEvent, AlertEvent, DecisionEvent, MeasurementEvent, PinnedEvidence, RecommendationEvent, RecordEvent, ReportEvent } from './types';
 
 export function pinEvidence(d: Derived, refs: { docId: string; revision: string; page: number; label: string; locate: 'exact' | 'ambiguous' | 'page-only'; quote?: string; region?: PinnedEvidence['region'] }[]): PinnedEvidence[] {
@@ -42,10 +43,10 @@ export function collectEvents(d: Derived, alertUser: Record<string, AlertUserSta
     const seed = s.sitrep;
     if (d.scenario && seed && settleT <= now && d.released(settleT)) push({ id: `narrative-s${s.index}`, t: settleT, recordedAt: now, kind: 'finding', title: 'Assessment update', detail: `${seed.situation}\nResponse: ${seed.actions}\nResources: ${seed.resources}\nNext: ${seed.next}`, source: 'agent', meta: { narrative: true } });
   }
-  for (const o of d.observations) push({ id: `obs-${o.id}`, t: o.time, recordedAt: now, kind: o.kind === 'agent-finding' ? 'finding' : 'observation', title: o.text, detail: `${o.source} · ${o.evidence}`, equipmentId: o.equipmentId, source: o.kind === 'agent-finding' || o.kind === 'route-assessment' ? 'agent' : 'field', meta: { evidence: o.evidence, obsKind: o.kind } });
+  for (const o of d.observations) push({ id: `obs-${o.id}`, t: o.time, recordedAt: now, kind: o.kind === 'agent-finding' ? 'finding' : 'observation', title: o.text, detail: `${o.source} · ${o.evidence}`, equipmentId: o.equipmentId, source: o.kind === 'agent-finding' || o.kind === 'route-assessment' ? 'agent' : 'field', by: o.kind === 'field-report' || o.kind === 'security-report' ? o.source.replace(/^Field · /, '') : undefined, meta: { evidence: o.evidence, obsKind: o.kind, ...(o.act ? { act: o.act } : {}) } });
   for (const f of d.findings) push({ id: `finding-${f.id}`, t: f.time, recordedAt: now, kind: 'finding', title: f.text, detail: f.supersedes ? 'Assessment revision; supersedes the earlier assessment' : 'Initial assessment', source: 'agent', meta: { assessment: true } });
   for (const a of d.alerts) {
-    const ae: AlertEvent = { id: `alert-${a.id}`, t: a.time, recordedAt: now, kind: 'alert', title: a.def.title, detail: a.def.measurement ?? a.def.why, equipmentId: a.def.equipmentId, source: 'agent', severity: a.def.severity, evidenceStatus: a.def.evidence, state: a.condition, meta: { alertId: a.id, why: a.def.why, consequence: a.def.consequence, ...(a.def.headline ? { headline: a.def.headline, qualifier: a.def.qualifier ?? null } : {}), ...(a.def.status ? { status: a.def.status, statusNote: a.def.statusNote ?? null } : {}), ...(a.def.brief ? { brief: a.def.brief } : {}), ...(a.processedLate ? { processedAt: a.processedLate } : {}) } };
+    const ae: AlertEvent = { id: `alert-${a.id}`, t: a.time, recordedAt: now, kind: 'alert', title: a.def.title, detail: a.def.measurement ?? a.def.why, equipmentId: a.def.equipmentId, source: 'agent', severity: a.def.severity, evidenceStatus: a.def.evidence, state: a.condition, meta: { alertId: a.id, why: a.def.why, consequence: a.def.consequence, ...(a.def.headline ? { headline: a.def.headline, qualifier: a.def.qualifier ?? null } : {}), ...(a.def.status ? { status: a.def.status, statusNote: a.def.statusNote ?? null } : {}), ...(a.def.brief ? { brief: a.def.brief } : {}), ...(a.def.act ? { act: a.def.act, actor: a.def.actor ?? null } : {}), ...(a.processedLate ? { processedAt: a.processedLate } : {}) } };
     push(ae);
     if (a.condition === 'cleared' && a.clearedAt) push({ id: `outcome-${a.id}`, t: a.clearedAt, recordedAt: now, kind: 'outcome', title: `Cleared: ${a.def.title}`, detail: a.clearedBy ? `By: ${d.alertById.get(a.clearedBy)?.def.title}` : undefined, equipmentId: a.def.equipmentId, source: 'agent', meta: { alertId: a.id, cleared: true } });
     if (a.condition === 'unconfirmed') push({ id: `gap-${a.id}`, t: a.time, recordedAt: now, kind: 'gap', title: `Information gap: ${a.def.title} can no longer be confirmed from ECC`, equipmentId: a.def.equipmentId, source: 'agent', meta: { alertId: a.id } });
@@ -58,11 +59,21 @@ export function collectEvents(d: Derived, alertUser: Record<string, AlertUserSta
     }
     const u = alertUser[a.id];
     if (u?.ackAt) push({ id: `ack-${a.id}`, t: u.ackAt, recordedAt: now, kind: 'acknowledgement', title: `Acknowledged: ${a.def.title}`, equipmentId: a.def.equipmentId, source: 'user', by: 'Shift Manager', meta: { alertId: a.id } });
-    if (u?.decision) {
-      const de: DecisionEvent = { id: `decision-${a.id}`, t: u.decision.at, recordedAt: now, kind: 'decision', title: `${u.decision.status === 'approved' ? 'Approved' : u.decision.status === 'deferred' ? 'Deferred' : 'Declined'}: ${u.decision.recommendationSummary}`, detail: u.decision.rationale || undefined, equipmentId: a.def.equipmentId, source: 'user', by: u.decision.by, alertId: a.id, status: u.decision.status, rationale: u.decision.rationale, recommendationSummary: u.decision.recommendationSummary, knownEventCount: 0, evidence: u.decision.evidenceUsed.map((e) => { const doc = d.docById.get(e.docId); return { docId: e.docId, title: doc?.title ?? e.docId, number: doc?.number ?? '', revision: e.revision, page: e.page, label: e.label, locate: 'page-only' as const }; }) };
+    const all = [...(u?.past ?? []), ...(u?.decision ? [u.decision] : [])];
+    all.forEach((dec, i) => {
+      const de: DecisionEvent = { id: i === 0 ? `decision-${a.id}` : `decision-${a.id}-${dec.at}`, t: dec.at, recordedAt: now, kind: 'decision', title: decisionTitle(dec.status, dec.recommendationSummary, dec.response), detail: dec.rationale || undefined, equipmentId: a.def.equipmentId, source: 'user', by: dec.by, alertId: a.id, status: dec.status, rationale: dec.rationale, ...(dec.response ? { response: dec.response } : {}), recommendationSummary: dec.recommendationSummary, knownEventCount: 0, evidence: dec.evidenceUsed.map((e) => { const doc = d.docById.get(e.docId); return { docId: e.docId, title: doc?.title ?? e.docId, number: doc?.number ?? '', revision: e.revision, page: e.page, label: e.label, locate: 'page-only' as const }; }) };
       push(de);
-    }
+    });
+    for (const c of u?.contacts ?? []) push(noticeEvent(c, a.id, now, a.def.equipmentId));
     for (const r of u?.reports ?? []) { const re: ReportEvent = { id: `report-${r.id}`, t: r.at, recordedAt: now, kind: 'report', title: r.text, detail: `${r.by} · ${r.status}`, equipmentId: a.def.equipmentId, source: 'field', by: r.by, alertId: a.id, status: r.status }; push(re); }
+  }
+  // Responses recorded on an issue that has no ECC suggestion are kept under the issue.
+  for (const [k, u] of Object.entries(alertUser)) {
+    if (!k.startsWith('issue:')) continue;
+    const issueId = k.slice(6);
+    [...(u.past ?? []), ...(u.decision ? [u.decision] : [])].forEach((dec, i) => { const de: DecisionEvent = { id: i === 0 ? `decision-${k}` : `decision-${k}-${dec.at}`, t: dec.at, recordedAt: now, kind: 'decision', title: decisionTitle(dec.status, dec.recommendationSummary, dec.response), detail: dec.rationale || undefined, source: 'user', by: dec.by, alertId: k, issueId, status: dec.status, rationale: dec.rationale, ...(dec.response ? { response: dec.response } : {}), recommendationSummary: dec.recommendationSummary, knownEventCount: 0 }; push(de); });
+    for (const c of u.contacts ?? []) push(noticeEvent(c, k, now, undefined, issueId));
+    for (const r of u.reports) { const re: ReportEvent = { id: `report-${r.id}`, t: r.at, recordedAt: now, kind: 'report', title: r.text, detail: `${r.by} · ${r.status}`, source: 'field', by: r.by, alertId: k, status: r.status, meta: { issueId } }; push(re); }
   }
   for (const r of d.fieldReports) { const re: ReportEvent = { id: `report-s${r.step}-${r.alertId}`, t: r.time, recordedAt: now, kind: 'report', title: r.text, detail: `${r.by} · ${r.status}`, source: 'field', by: r.by, alertId: r.alertId, status: r.status }; push(re); }
   for (const t of d.tasks) {
@@ -81,4 +92,20 @@ export function collectEvents(d: Derived, alertUser: Record<string, AlertUserSta
   }
   for (const doc of d.docs) for (const r of doc.revisions) if (r.effectiveFrom === 'this emergency') push({ id: `knowledge-${doc.id}-${r.revision}`, t: d.stepEnd(d.stepIndex), recordedAt: now, kind: 'knowledge', title: `${doc.number} Rev ${r.revision} became ${r.status}; earlier references keep their revision`, source: 'system', meta: { docId: doc.id, revision: r.revision } });
   return out.sort((a, b) => a.t - b.t);
+}
+
+/** Situation Room actions people took: issues they opened, where they placed updates, and closing or reopening issues. */
+export function issueEvents(issueUser: Record<string, IssueUserState>, placements: Record<string, Placement>, userIssues: UserIssue[], now: number, existing: Set<string>): RecordEvent[] {
+  const out: RecordEvent[] = [];
+  const push = (e: RecordEvent) => { if (!existing.has(e.id)) out.push(e); };
+  for (const u of userIssues) push({ id: `issue-open-${u.id}`, t: u.t, recordedAt: now, kind: 'issue', title: `Issue opened: ${u.title}`, equipmentId: u.equipmentId, source: 'user', by: u.by, meta: { issueId: u.id, from: u.from } });
+  for (const [issueId, u] of Object.entries(issueUser)) for (const h of u.history ?? []) push({ id: `issue-${h.kind}-${issueId}-${h.t}`, t: h.t, recordedAt: now, kind: 'issue', title: `Issue ${h.kind}: ${h.title}`, detail: h.note || undefined, source: 'user', by: h.by, meta: { issueId, [h.kind]: true } });
+  for (const [updateId, p] of Object.entries(placements)) push({ id: `placement-${updateId}-${p.at}`, t: p.at, recordedAt: now, kind: 'issue', title: p.to === 'info' ? `Update recorded as information only: ${p.label}` : `Update added to issue “${p.toTitle}”: ${p.label}`, source: 'user', by: p.by, meta: { issueId: p.to, updateId } });
+  return out.sort((a, b) => a.t - b.t);
+}
+
+/** A contact as a record entry: who was told, how, about what, and when an update was expected. */
+function noticeEvent(c: Contact, key: string, now: number, equipmentId?: string, issueId?: string): RecordEvent {
+  const exp = c.expectBy ? ` · expected an update by ${clock(c.expectBy)}` : '';
+  return { id: `notice-${c.id}`, t: c.at, recordedAt: now, kind: 'notice', title: `${c.followUpOf ? 'Followed up with' : 'Told'} ${c.to} by ${c.via.toLowerCase()}${c.decision && !c.followUpOf ? ` about the decision: ${c.decision}` : ''}`, detail: [c.note, `Recorded by ${c.by.split(' · ')[0]}${exp}. ECC does not send messages.`].filter(Boolean).join(' · '), equipmentId, source: 'user', by: c.by, alertId: key, meta: { issueId, to: c.to, via: c.via, expectBy: c.expectBy, followUpOf: c.followUpOf } } as RecordEvent;
 }

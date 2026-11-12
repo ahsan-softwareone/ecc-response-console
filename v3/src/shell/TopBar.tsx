@@ -1,3 +1,4 @@
+import { useRoom } from '../situation/issues';
 import { useDerived } from '../lib/derive';
 import { clock, elapsedParts, pad2, useNow } from '../lib/time';
 import { PERSONAS, useStore, type Nav } from '../store';
@@ -5,8 +6,8 @@ import { IconButton, Popover } from '../ui/ui';
 
 const NAV: { id: Nav; label: string }[] = [
   { id: 'overview', label: 'Overview' },
-  { id: 'situation', label: 'Situation' },
-  { id: 'sitrep', label: 'Sit. Rep' },
+  { id: 'situation', label: 'Situation Room' },
+  { id: 'sitrep', label: 'Timeline' },
   { id: 'agentlog', label: 'Agent Log' },
   { id: 'knowledge', label: 'Knowledge' },
 ];
@@ -50,7 +51,9 @@ export function TopBar() {
   const assistantOpen = useStore((s) => s.assistantOpen);
   const setAssistantOpen = useStore((s) => s.setAssistantOpen);
   const d = useDerived();
-  const unread = useStore((s) => d.alerts.filter((a) => !s.alertUser[a.id]?.readAt).length);
+  const room = useRoom();
+  const needs = room.open.filter((i) => i.ask === 'decision' || i.ask === 'respond' || i.ask === 'verify').length + room.review.length;
+  void d;
 
   return (
     <header className="topbar">
@@ -61,7 +64,7 @@ export function TopBar() {
         {NAV.map((n) => (
           <button key={n.id} onClick={() => setNav(n.id)} aria-current={nav === n.id ? 'page' : undefined} data-testid={`nav-${n.id}`}>
             {n.label}
-            {n.id === 'situation' && unread > 0 && <span className="badge frame" title={`${unread} unread alerts`}>{unread}</span>}
+            {n.id === 'situation' && needs > 0 && <span className="badge frame" title={`${needs} ${needs === 1 ? 'item needs' : 'items need'} you: decisions, checks and updates to review`} data-testid="nav-needs">{needs}</span>}
           </button>
         ))}
       </nav>

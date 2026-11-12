@@ -7,7 +7,11 @@ export type RecordKind =
   | 'notification' | 'equipment' | 'measurement' | 'observation' | 'alert' | 'finding'
   | 'recommendation' | 'decision' | 'report' | 'outcome' | 'gap' | 'agent' | 'reference'
   | 'knowledge' | 'report-version' | 'stabilization' | 'closure' | 'correction' | 'lesson' | 'acknowledgement'
-  | 'agent-control' | 'config' | 'lifecycle' | 'resolution' | 'investigation' | 'severity';
+  /** Who the Incident Manager told about a decision, or followed up with. ECC records it; it sends nothing. */
+  | 'notice'
+  /** Feedback on an ECC recommendation, kept for review. It changes nothing automatically. */
+  | 'feedback'
+  | 'agent-control' | 'config' | 'lifecycle' | 'resolution' | 'investigation' | 'severity' | 'issue';
 
 export interface PinnedEvidence { docId: string; title: string; number: string; revision: string; page: number; label: string; locate: 'exact' | 'ambiguous' | 'page-only'; quote?: string; region?: { page: number; x: number; y: number; w: number; h: number } }
 
@@ -29,7 +33,7 @@ export interface RecordEventBase {
 export interface MeasurementEvent extends RecordEventBase { kind: 'measurement'; values: { watcherId: string; variable: string; value: number; unit: string; source: string }[]; /** Significant changes since the previous snapshot, one per line. */ changes: string[] }
 export interface AlertEvent extends RecordEventBase { kind: 'alert'; severity: Severity; evidenceStatus: EvidenceStatus; state: string }
 export interface RecommendationEvent extends RecordEventBase { kind: 'recommendation'; alertId: string; summary: string; actions: string[]; prerequisites: string[]; calculation?: string; supersededBy?: { alertId: string; t: number; reason: string } }
-export interface DecisionEvent extends RecordEventBase { kind: 'decision'; alertId: string; status: 'approved' | 'deferred' | 'declined'; rationale: string; recommendationSummary: string; knownEventCount: number }
+export interface DecisionEvent extends RecordEventBase { kind: 'decision'; alertId: string; status: 'approved' | 'deferred' | 'declined' | 'alternative'; rationale: string; /** For a different response: what will be done instead. */ response?: string; /** The Situation Room issue the decision was made in. */ issueId?: string; recommendationSummary: string; knownEventCount: number }
 export interface ReportEvent extends RecordEventBase { kind: 'report'; alertId: string; status: ExecutionStatus }
 export interface AgentEvent extends RecordEventBase { kind: 'agent'; headline: string; /** Documents consulted, resolvable to the viewer. */ docRefs?: { docId: string; revision: string; page?: number; label: string }[]; taskId: string; taskKind: string; status: 'done' | 'error' | 'waiting'; sources: string[]; documents: string[]; findings: string[]; failures: string[]; runId: string; configVersion: string; technical: { steps: { name: string; status: string; operations: { name: string; source: string; startedAt: number; durationMs: number; result: string; detail: string; retries: number; logs: { t: number; level: string; text: string }[] }[] }[] } }
 export interface ReportVersionEvent extends RecordEventBase { kind: 'report-version'; versionId: string; number: number; status: 'draft' | 'review' | 'approved'; asOf: number }
@@ -61,7 +65,7 @@ export interface AgentRun { id: string; number: number; startedAt: number; by: s
 export interface ResolutionRecord { t: number; recordedAt: number; by: string; summary: string; rationale: string; evidence: string[]; outstanding: string[]; followUp: string[] }
 export interface ClosureRecord { t: number; by: string; rationale: string; outstanding: string[]; sitrep?: string }
 /** Enough simulation state to resume a set-aside or reopened incident. */
-export interface SimSnapshot { startedAt: number; revealedAt: number[]; dashboard: string[]; watcherOverrides: Record<string, unknown>; alertUser: Record<string, unknown> }
+export interface SimSnapshot { startedAt: number; revealedAt: number[]; dashboard: string[]; watcherOverrides: Record<string, unknown>; alertUser: Record<string, unknown>; issueUser?: Record<string, unknown>; placements?: Record<string, unknown>; userIssues?: unknown[] }
 
 /** How an observation came to ECC. Submission alone never establishes independent verification. */
 export type ObservationSource = 'personal' | 'field' | 'control-room' | 'other';
@@ -147,6 +151,10 @@ export interface IncidentRecord {
   createdAt?: number;
   notification?: { text: string; via: string };
   location?: string;
+  /** What the Shift Manager entered at intake, uncertainty included. */
+  intake?: Intake;
+  /** Feedback people gave on ECC's recommendations, each with the exact proposal it refers to. */
+  feedback?: ProposalFeedback[];
   incidentType?: string;
   resolution?: ResolutionRecord;
   /** Earlier resolutions and closures kept when an incident returns to Active or is reopened. */
@@ -168,4 +176,31 @@ export interface IncidentRecord {
   /** Document revisions explicitly referenced in this incident. */
   references: { docId: string; revision: string; t: number; by: string; note: string }[];
   updatedAt: number;
+}
+
+/** The intake as entered: where, which equipment, when, and how sure. ECC's equipment suggestions wait for a person to confirm. */
+export interface Intake {
+  area?: string;
+  /** The place as described: exact, or approximate when placeApprox is set. */
+  place?: string;
+  placeApprox?: boolean;
+  /** The person said the equipment is not known yet. */
+  equipmentUnknown?: boolean;
+  occurredApprox?: boolean;
+  reportedBy?: string;
+  channel?: string;
+  notes?: string;
+  suggested?: { id: string; reason: string; status: 'pending' | 'added' | 'dismissed'; by?: string; at?: number }[];
+}
+
+/** Feedback on one recommendation, saved with the proposal exactly as shown, so it can be reviewed later. */
+export interface ProposalFeedback {
+  id: string; t: number; by: string;
+  issueId: string; issueTitle: string;
+  /** The proposal as it was shown: which alert raised it, its version in the record, its wording and steps. */
+  proposal: { alertId: string; version: string; summary: string; actions: string[] };
+  /** The evidence the proposal cited, at the revisions it cited. */
+  evidence: { docId: string; revision: string; page: number; label: string }[];
+  comment: string;
+  reason?: string;
 }

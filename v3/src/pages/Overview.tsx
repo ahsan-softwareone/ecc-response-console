@@ -1,7 +1,7 @@
 // Incident Overview: the Incident Manager's briefing for the active incident.
 // Read-only: viewing it, or opening anything from it, changes no acknowledgement, decision or command state.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { WATCHERS } from '../data/scenario';
+import { EQUIPMENT, WATCHERS } from '../data/scenario';
 import { LIFECYCLE_LABEL } from '../lib/agent';
 import { useDerived, useIncidentNow } from '../lib/derive';
 import { formatValue, sampleAt, type Clock } from '../lib/series';
@@ -11,6 +11,7 @@ import { DEFAULT_DASHBOARD } from '../data/scenario';
 import { SEVERITY_SCALE, useStore, type QuickRef } from '../store';
 import { Icon } from '../ui/Icon';
 import { useEscape } from '../ui/esc';
+import { ASK_LABEL, followUpDue, useRoom, type Issue, type RoomData } from '../situation/issues';
 import { Popover } from '../ui/ui';
 import type { DecisionEvent, IncidentRecord, RecommendationEvent } from '../record/types';
 
@@ -21,7 +22,7 @@ function useGo() {
   return (t: Target) => {
     const st = s(); st.setOverview({ fromOverview: true });
     if (t.kind === 'alert') st.focusAlert(t.alertId, t.tab);
-    else if (t.kind === 'concern') { st.selectConcern(t.invId, 'response'); st.setNav('situation'); st.showPanel('situation.response'); }
+    else if (t.kind === 'concern') { st.setNav('situation'); st.selectConcern(t.invId, 'response'); }
     else if (t.kind === 'reading') st.setTrendView({ equipmentId: t.equipmentId, watcherId: t.watcherId, windowMin: 15 });
     else if (t.kind === 'timeline') { st.setTimelineFocus(t.eventId); st.setNav('sitrep'); }
     else if (t.kind === 'doc') st.openViewer({ ...t.ev, origin: 'Incident Overview', dock: false });
@@ -99,12 +100,12 @@ function Header({ record, asOf, onRecord, onExec }: { record: IncidentRecord; as
   );
 }
 
-function DetailsPanel({ head, cards, onCard, onDeps }: { head: { headline: string; para: string }; cards: Card[]; onCard: (c: Card, el: HTMLElement) => void; onDeps: () => void }) {
+function DetailsPanel({ head, cards, onCard, onDeps, record }: { head: { headline: string; para: string }; cards: Card[]; onCard: (c: Card, el: HTMLElement) => void; onDeps: () => void; record: IncidentRecord }) {
   return (
     <section className="ob-panel ob-details" data-testid="ov-summary" aria-labelledby="ob-det-h">
       <div className="ob-sh"><h2 id="ob-det-h">Incident details</h2><button className="link" onClick={onDeps} data-testid="ov-deps">Equipment and dependencies</button></div>
       <h3 className="ob-headline" data-testid="ov-headline">{head.headline}</h3>
-      <p className="ob-intro" data-testid="ov-para">{head.para}</p>
+      {head.para && <p className="ob-intro" data-testid="ov-para">{head.para}</p>}
       {cards.length > 0 && (
         <div className="ob-cards" style={{ gridTemplateColumns: `repeat(${Math.max(cards.length, 3)}, minmax(0, 1fr))` }}>
           {cards.map((c) => (
@@ -116,81 +117,168 @@ function DetailsPanel({ head, cards, onCard, onDeps }: { head: { headline: strin
           ))}
         </div>
       )}
+      {record.intake && <IntakeFacts record={record} />}
     </section>
+  );
+}
+
+/** What was reported at intake, as entered: where, which equipment, and the original words. ECC's suggestions wait for a person. */
+function IntakeFacts({ record: r }: { record: IncidentRecord }) {
+  const resolve = useStore((s) => s.resolveSuggestedEquipment);
+  const it = r.intake!;
+  const named = r.equipment.filter((id) => !(it.suggested ?? []).some((s) => s.id === id && s.status === 'added'));
+  const nameOf = (id: string) => EQUIPMENT.find((x) => x.id === id)?.name ?? id;
+  const pending = (it.suggested ?? []).filter((s) => s.status === 'pending');
+  const added = (it.suggested ?? []).filter((s) => s.status === 'added');
+  return (
+    <div className="ob-intake" data-testid="ov-intake">
+      <dl>
+        <div><dt>Reported location</dt><dd data-testid="ov-intake-location">{it.place ? <>{it.place}{it.placeApprox && <span className="ob-q"> · approximate</span>}</> : <span className="ob-q">Not stated</span>}{it.area ? <span className="sidenote"> · {it.area} area</span> : <span className="sidenote"> · area not stated</span>}</dd></div>
+        <div><dt>Equipment that may be involved</dt><dd data-testid="ov-intake-equipment">{named.length ? <>{named.map((id) => `${id} ${nameOf(id)}`).join(', ')}<span className="ob-q"> · named at intake, not verified</span></> : <span className="ob-q">Not yet identified</span>}{added.length > 0 && <span className="sidenote"> · also watching {added.map((s) => s.id).join(', ')} (suggested by ECC, confirmed)</span>}</dd></div>
+        <div className="wide"><dt>Original notification</dt><dd data-testid="ov-intake-notification">“{r.notification?.text}”<span className="sidenote"> · {[it.reportedBy, it.channel ? `by ${it.channel.toLowerCase()}` : '', `${it.occurredApprox ? 'about ' : ''}${clock(r.occurredAt ?? r.startedAt)}`].filter(Boolean).join(' · ')}</span></dd></div>
+      </dl>
+      {pending.length > 0 && (
+        <div className="ob-suggest" data-testid="ov-suggest">
+          <span className="ob-suggest-h">ECC suggests also watching</span>
+          {pending.map((s) => (
+            <div key={s.id} className="ob-suggest-r" data-testid="ov-suggest-item" data-eq={s.id}>
+              <span><b>{s.id}</b> {nameOf(s.id)}<span className="sidenote"> · {s.reason}</span></span>
+              <span className="ob-suggest-a"><button className="btn sm" onClick={() => void resolve(s.id, true)} data-testid={`ov-suggest-add-${s.id}`}>Add to Equipment watch</button><button className="link" onClick={() => void resolve(s.id, false)} data-testid={`ov-suggest-no-${s.id}`}>Not relevant</button></span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
 const PILL: Record<string, string> = { decision: 'Decision needed', review: 'Decision review', verification: 'Verification pending', signal: 'Signal lost', 'follow-up': 'Follow-up', assessment: 'Assessment' };
 const kindOf = (a: Attention) => (a.id.startsWith('rev-') ? 'review' : a.id.startsWith('sig-') ? 'signal' : a.kind);
-const ACTION: Record<string, string> = { decision: 'Review decision', review: 'Review decision', verification: 'View report', signal: 'View reading', 'follow-up': 'Review', assessment: 'Assess' };
 type Item = Attention & { short: string; sentence: string; k: string };
 
-function AttentionPanel({ items, onItem, onQueue }: { items: Item[]; onItem: (a: Item, el: HTMLElement) => void; onQueue: (el: HTMLElement) => void }) {
-  const [lead, ...rest] = items;
+/** What still needs doing: the same next step the issue shows in the Situation Room, in a few words. */
+function nextStep(i: Issue, t: number): string {
+  const lc = (x: string) => (/^[A-Z]{1,3}-?\d|^[A-Z]{2}/.test(x) ? x : x.charAt(0).toLowerCase() + x.slice(1));
+  // The first action of a long recommendation: up to the first clause break or " and ".
+  const short = (x: string) => { const c = x.split(/[;:]|, (?=and |once |before )| and (?=[a-z]+ )/)[0].trim().replace(/\.$/, ''); return c.length > 80 ? `${c.slice(0, 77).trimEnd()}…` : c; };
+  const due = followUpDue(i, t);
+  if (due) return `Follow up with ${due.contact.to}: no field update since ${clock(due.since)}`;
+  const rec = i.suggestion?.def.recommendation;
+  const lastRep = [...i.reports].reverse()[0];
+  // A result reported after ECC's recommendation (the fire reported contained) is what to check first; the decision stays open.
+  const result = [...i.alerts].reverse().find((a) => a.def.act === 'result' && a.def.evidence === 'reported' && (!i.suggestion || a.time >= i.suggestion.time) && !i.verified);
+  switch (i.ask) {
+    case 'decision': return result ? `Verify: ${lc(short(String(result.def.headline ?? result.def.title)))} (decision still open)` : rec ? `Decide: ${lc(short(rec.summary))}` : 'Decide on the response';
+    case 'deferred': return 'Decision deferred: decide when ready';
+    case 'respond': return i.decision?.status === 'declined' ? 'Record what will be done instead' : 'Record how it will be handled, or close it';
+    case 'field': return `Get the field update: ${lc(short(i.decision?.response ?? i.decision?.recommendationSummary ?? 'the response'))}`;
+    case 'verify': return i.recheck ? 'Check it again after the latest update' : `Verify: ${lc(short(lastRep?.text ?? 'that the response worked'))}`;
+    case 'close': return 'Close it if no more follow-up is needed';
+    default: return '';
+  }
+}
+
+/** A short preview of Open issues in the Situation Room: the same issues, titles, statuses and order; one row per issue. */
+function AttentionPanel({ room, t, onIssue, onAll }: { room: RoomData; t: number; onIssue: (id: string) => void; onAll: () => void }) {
+  const rows = room.open.slice(0, 3);
   return (
     <section className="ob-panel ob-attention" data-testid="ov-attention" aria-labelledby="ob-att-h">
-      <div className="ob-sh"><h2 id="ob-att-h">Requires attention</h2>{items.length > 0 && <button className="link" onClick={(e) => onQueue(e.currentTarget)} data-qd="queue:" data-testid="ov-attention-all">View open items ({items.length})</button>}</div>
-      {!lead && <p className="quiet" data-testid="ov-attention-empty">Nothing recorded needs a decision, verification or assessment right now.</p>}
-      {lead && (
-        <div className="ob-lead" data-testid="ov-item" data-lead="true" data-kind={lead.k} data-id={lead.id}>
-          <div className="ob-lead-t">
-            <span className={`ob-pill ${lead.k}`}>{PILL[lead.k]}</span>
-            <h3 data-testid="ov-item-title">{lead.short}</h3>
-            <p data-testid="ov-item-why">{lead.sentence}</p>
-          </div>
-          <button className="btn primary" onClick={(e) => onItem(lead, e.currentTarget)} data-qd={`item:${lead.id}`} data-testid="ov-item-action">{ACTION[lead.k]}</button>
-        </div>
-      )}
-      <div className="ob-queue">
-        {rest.slice(0, 3).map((a) => (
-          <button key={a.id} className="ob-row" onClick={(e) => onItem(a, e.currentTarget)} data-qd={`item:${a.id}`} data-testid="ov-item" data-kind={a.k} data-id={a.id}>
-            <span className="grow"><span className="ob-row-t" data-testid="ov-item-title">{a.short}</span><span className="ob-row-k">{PILL[a.k]}</span></span><span className="ob-row-a" data-testid="ov-item-action">{ACTION[a.k]}</span>
-          </button>
+      <div className="ob-sh"><h2 id="ob-att-h">Requires attention</h2>{room.open.length > 0 && <button className="link" onClick={onAll} data-testid="ov-attention-all">View open issues ({room.open.length})</button>}</div>
+      {rows.length === 0 && <p className="quiet" data-testid="ov-attention-empty">No open issues. Nothing needs a decision, a field update or a check right now.</p>}
+      <ul className="ob-att">
+        {rows.map((i) => (
+          <li key={i.id}>
+            <button className="ob-att-row" onClick={() => onIssue(i.id)} data-testid="ov-item" data-issue={i.id} data-ask={i.ask} title={`Open “${i.title}” in the Situation Room`}>
+              <span className={`sr-ask ask-${i.ask}`} data-testid="ov-item-status">{ASK_LABEL[i.ask]}</span>
+              <span className="ob-att-b">
+                <span className="ob-att-t" data-testid="ov-item-title">{i.title}</span>
+                <span className="ob-att-n" data-testid="ov-item-next">{nextStep(i, t)}</span>
+              </span>
+              <span className="ob-att-go" aria-hidden="true"><Icon name="chevR" size={14} /></span>
+            </button>
+          </li>
         ))}
-      </div>
+      </ul>
     </section>
   );
 }
 
 const dur = (ms: number) => { const m = Math.round(ms / 60_000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`; };
+/** Clock time; with seconds when a neighbour shares the minute, so the order of same-minute events is explicit. */
+const msTime = (ms: Milestone[], i: number) => {
+  const minute = (t: number) => Math.floor(t / 60_000);
+  const shared = [ms[i - 1], ms[i + 1]].some((x) => x && minute(x.t) === minute(ms[i].t));
+  if (!shared) return clock(ms[i].t);
+  const d = new Date(ms[i].t); return `${clock(ms[i].t)}:${String(d.getSeconds()).padStart(2, '0')}`;
+};
+// Amber only for doubt about a fact (not verified, unconfirmed, pending), not for a condition that is simply bad.
+const UNCERTAIN = /not verified|unverified|unconfirmed|pending|approximate/i;
+
+/** How the incident unfolded: one development per milestone, left to right on a continuous spine. Spacing is even, not to scale. */
 function Unfolded({ seq, asOf, story, sel, onPick, onFull }: { seq: Sequence; asOf: number; story: boolean; sel: string | null; onPick: (m: Milestone, el: HTMLElement) => void; onFull: () => void }) {
   const ms = seq.ms;
+  // A short story starts at the left: at least four columns, the spine ending just after the latest event.
+  const n = Math.max(ms.length, 1); const cols = Math.max(ms.length, 4);
+  const wrap = useRef<HTMLDivElement>(null);
+  const [edge, setEdge] = useState({ l: false, r: false });
+  useLayoutEffect(() => {
+    const el = wrap.current; if (!el) return;
+    const on = () => setEdge({ l: el.scrollLeft > 2, r: el.scrollLeft + el.clientWidth < el.scrollWidth - 2 });
+    on(); el.addEventListener('scroll', on, { passive: true });
+    const ro = new ResizeObserver(on); ro.observe(el);
+    return () => { el.removeEventListener('scroll', on); ro.disconnect(); };
+  }, [ms.length]);
+  // Opening the briefing shows the latest developments when they do not all fit.
+  useLayoutEffect(() => { const el = wrap.current; if (el) el.scrollLeft = el.scrollWidth; }, [ms.length]);
   return (
-    <section className={`ob-panel ob-unfold ${story ? 'story' : ''}`} data-testid="ov-sequence" aria-labelledby="ob-seq-h">
-      <div className="ob-sh"><div><h2 id="ob-seq-h">How the incident unfolded</h2><div className="ob-note">Key developments in chronological order · as of {clock(asOf)}{seq.earlier > 0 && <span data-testid="sq-earlier"> · first report and latest {ms.length - 1}; {seq.earlier} earlier in the full timeline</span>}</div></div><button className="link" onClick={onFull} data-testid="ov-full-timeline">Full timeline</button></div>
-      <ol className="ob-spine" style={{ gridTemplateColumns: `repeat(${Math.max(ms.length, 2)}, minmax(0, 1fr))` }} data-testid="event-chart" data-milestones={ms.length}>
-        {ms.map((m, i) => {
-          const gap = i > 0 ? m.t - ms[i - 1].t : 0;
-          const up = story && i % 2 === 1;
-          return (
-            <li key={m.id} className={`ob-ev ${up ? 'up' : ''} ${m.critical ? 'crit' : ''} ${sel === m.id ? 'on' : ''}`}>
-              {gap >= 15 * 60_000 && <span className="ob-gap" data-testid="sq-gap">{dur(gap)}</span>}
-              <button onClick={(e) => onPick(m, e.currentTarget)} aria-label={`${clock(m.t)}: ${m.headline}${m.qualifier ? `. ${m.qualifier}` : ''}`} data-qd={`ms:${m.id}`} data-testid="ec-marker" data-id={m.id}>
-                <time className="num">{clock(m.t)}</time>
-                <span className="ob-dot" aria-hidden="true" />
-                <span className="ob-stem" aria-hidden="true" />
-                <span className="ob-lbl" data-testid="ec-label"><b>{m.headline}</b>{m.qualifier && <small>{m.qualifier}</small>}</span>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
+    <section className={`ob-panel ob-unfold us-panel ${story ? 'story' : ''}`} data-testid="ov-sequence" aria-labelledby="ob-seq-h">
+      <div className="ob-sh us-head">
+        <div>
+          <h2 id="ob-seq-h">How the incident unfolded</h2>
+          <div className="ob-note">Key developments, earliest first · as of {clock(asOf)}{seq.earlier > 0 && <span data-testid="sq-earlier"> · first report and latest {ms.length - 1}; {seq.earlier} more in the full timeline</span>}<span className="us-scale"> · evenly spaced, not to time scale</span></div>
+        </div>
+        <button className="link" onClick={onFull} data-testid="ov-full-timeline">Full timeline</button>
+      </div>
+      <div className={`us-wrap ${edge.l ? 'more-l' : ''} ${edge.r ? 'more-r' : ''}`} ref={wrap} data-testid="us-scroll" data-overflow={edge.l || edge.r ? 'true' : 'false'}>
+        <ol className="us" style={{ ['--n' as string]: n, ['--cols' as string]: cols }} data-testid="event-chart" data-milestones={ms.length} aria-label="Developments, earliest first">
+          {ms.map((m, i) => {
+            const gap = i > 0 ? m.t - ms[i - 1].t : 0;
+            const up = i % 2 === 1;
+            const pos = i === 0 ? 'first' : i === ms.length - 1 ? 'last' : 'mid';
+            return (
+              <li key={m.id} className={`us-ev ${up ? 'up' : 'down'} ${pos} ${m.critical ? 'crit' : ''} ${sel === m.id ? 'on' : ''}`} data-testid="us-ev">
+                {i > 0 && <span className={`us-step ${gap >= 10 * 60_000 ? 'gap' : ''}`} aria-hidden="true" data-testid={gap >= 10 * 60_000 ? 'sq-gap' : undefined}>{gap >= 10 * 60_000 ? <>{dur(gap)} <span className="us-chev">›</span></> : <span className="us-chev">›</span>}</span>}
+                <button onClick={(e) => onPick(m, e.currentTarget)} aria-label={`${i + 1} of ${ms.length}, ${msTime(ms, i)}: ${m.headline}${m.qualifier ? `. ${m.qualifier}` : ''}. Open for the full record.`} data-qd={`ms:${m.id}`} data-testid="ec-marker" data-id={m.id}>
+                  <span className="us-dot" aria-hidden="true" />
+                  <span className="us-stem" aria-hidden="true" />
+                  <span className="us-lbl" data-testid="ec-label">
+                    <time className="num" data-testid="ec-time">{msTime(ms, i)}</time>
+                    <b>{m.headline}</b>
+                    {m.qualifier && <small className={UNCERTAIN.test(m.qualifier) ? 'unsure' : ''}>{m.qualifier}</small>}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
     </section>
   );
 }
 
-interface QuickView { wide?: boolean; crumb?: string; status: string; title: string; why?: string; known?: string[]; open?: string[]; proposed?: { summary: string; actions: string[] }; source?: MsRecord; primary?: { label: string; run: () => void; testid: string }; secondary?: { label: string; run: () => void; testid: string }[]; body?: React.ReactNode }
+interface QuickView { issue?: string | null; wide?: boolean; crumb?: string; status: string; title: string; why?: string; known?: string[]; open?: string[]; proposed?: { summary: string; actions: string[] }; source?: MsRecord; primary?: { label: string; run: () => void; testid: string }; secondary?: { label: string; run: () => void; testid: string }[]; body?: React.ReactNode }
 function QuickPanel({ v, onClose }: { v: QuickView; onClose: () => void }) {
   useEscape(true, onClose);
   const ref = useRef<HTMLHeadingElement>(null);
   useEffect(() => { ref.current?.focus(); }, [v.title]);
   return (
-    <div className="ob-qd-back" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <aside className={`ob-qd ${v.wide ? 'wide' : ''}`} role="dialog" aria-labelledby="ob-qd-title" data-testid="quick-detail">
+    <div className="ob-qd-back side-sheet-back" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <aside className={`ob-qd side-sheet ${v.wide ? 'wide' : ''}`} role="dialog" aria-labelledby="ob-qd-title" data-testid="quick-detail">
         <header className="ob-qd-h"><span className="ob-eyebrow">Overview / {v.crumb ?? 'Quick detail'}</span><button className="iconbtn sm" onClick={onClose} aria-label="Close quick detail" title="Close" data-testid="qd-close"><Icon name="close" size={14} /></button></header>
         <div className="ob-qd-b">
           <div className="ob-eyebrow" data-testid="qd-status">{v.status}</div>
           <h2 id="ob-qd-title" tabIndex={-1} ref={ref} data-testid="qd-title">{v.title}</h2>
+          {v.issue && <p className="ob-qd-issue" data-testid="qd-issue">Part of the issue <b>“{v.issue}”</b> in the Situation Room</p>}
           {v.why && <section className="ob-qd-s" data-testid="qd-why"><h4>Why it matters</h4><p>{v.why}</p></section>}
           {v.proposed && <section className="ob-qd-s" data-testid="qd-proposed"><h4>Proposed action</h4><p>{v.proposed.summary}</p>{v.proposed.actions.length > 0 && <ul>{v.proposed.actions.map((a) => <li key={a}>{a}</li>)}</ul>}</section>}
           {v.known && v.known.length > 0 && <section className="ob-qd-s" data-testid="qd-known"><h4>What we know</h4>{v.known.map((k, i) => <p key={i}>{k}</p>)}</section>}
@@ -251,6 +339,12 @@ export function Overview() {
   const roleOf = useDerived().roleOf;
   const go = useGo();
   const q = useQuick();
+  const room = useRoom();
+  const issueIdOf = (t: Target | undefined): string | null => { if (!t) return null; const u = t.kind === 'alert' ? room.updateById.get(t.alertId) : t.kind === 'concern' ? room.updateById.get(`inv-${t.invId}`) : undefined; const id = u?.place.issueId; return id && room.byId.get(id) ? id : null; };
+  const issueOf = (t: Target | undefined): string | null => { const id = issueIdOf(t); return id ? room.byId.get(id)!.title : null; };
+  // To the Situation Room, remembering the briefing as the origin: a specific issue, or the Open issues list with nothing open.
+  const toOpenIssues = () => { setOverview({ quick: null, fromOverview: true }); const st = useStore.getState(); st.setNav('situation'); st.closeRoomPanel(); st.setRoom({ view: 'issues', list: 'open', feedEquipment: null, feedIssue: null }); };
+  const OPEN_ISSUE = 'Open issue in Situation Room';
   const ref = useRef<HTMLDivElement>(null);
   const [deps, setDeps] = useState(false);
   const [copied, setCopied] = useState<'ok' | 'fail' | null>(null);
@@ -259,12 +353,17 @@ export function Overview() {
   const readings: Reading[] = useMemo(() => WATCHERS.filter((w) => dashboard.includes(w.equipmentId) && w.unit !== 'status').map((w) => { const s = sampleAt(w, now, clk); return { watcherId: w.id, equipmentId: w.equipmentId, variable: w.variable, text: `${formatValue(w, s.value)}${w.unit === 'status' ? '' : ` ${w.unit}`}, ${s.trend}`, trend: s.trend, source: s.source, observedAt: s.observedAt }; }), [dashboard, now, clk]);
   const data = useMemo(() => {
     if (!record) return null;
-    const asOf = record.closure ? Math.min(now, record.closure.t) : now;
+    // As of now, and never earlier than the newest event shown, so the as-of time and the event times agree.
+    const newest = record.events.reduce((m, e) => Math.max(m, e.t), 0);
+    const asOf = record.closure ? Math.min(Math.max(now, newest), record.closure.t) : Math.max(now, newest);
     const pic = equipmentPicture(record, asOf, roleOf);
     const att = prioritised(record, asOf, readings);
     const mins = Math.max(0, Math.floor((asOf - (record.occurredAt ?? record.startedAt)) / 60000));
     const seq = milestones(record, asOf, 8);
-    const cards = statusCards(record, asOf, [...new Set([...dashboard, ...DEFAULT_DASHBOARD])]);
+    const alertCards = statusCards(record, asOf, [...new Set([...dashboard, ...DEFAULT_DASHBOARD])]);
+    const kind = record.incidentType && record.incidentType !== 'Not sure' ? record.incidentType : null;
+    const intakeCards: Card[] = record.intake ? record.equipment.filter((id) => !alertCards.some((c) => c.eq === id)).slice(0, Math.max(0, 4 - alertCards.length)).map((id) => ({ eq: id, name: EQUIPMENT.find((x) => x.id === id)?.name ?? id, condition: kind ? `${kind} reported` : 'May be involved', note: 'Reported at intake; not verified', wait: true, alertId: '', basisId: '', t: record.occurredAt ?? record.startedAt, severity: 'medium' })) : [];
+    const cards = [...alertCards, ...intakeCards];
     const items: Item[] = att.map((a) => { const al = alertOf(record, a.target); return { ...a, k: kindOf(a), short: shortTitle(record, a), sentence: firstSentence(String(al?.meta?.why ?? a.why.replace(/^Recommended for: /, 'Raised by: '))) }; });
     if (!record.severity && record.status !== 'closed') items.splice(Math.min(items.length, items[0]?.k === 'decision' ? 2 : 0), 0, { id: 'assess-severity', kind: 'follow-up', k: 'assessment', title: 'Assess incident severity', short: 'Assess incident severity', sentence: 'No incident-level severity has been recorded.', why: '', uncertain: '', owner: '', action: 'Assess', target: { kind: 'timeline', eventId: '' }, t: asOf });
     const head = situationHead(record, asOf, cards, att[0], seq, items.filter((x) => x.k === 'verification').length);
@@ -288,7 +387,8 @@ export function Overview() {
         known: [...(latest !== al ? [`Latest (${clock(latest.t)}): ${latest.title}${latest.detail ? `: ${latest.detail}` : ''}.`] : []), `${al.title}${al.detail && al.detail !== al.meta?.why ? `: ${al.detail}` : ''}.`],
         open: [...(c.wait ? [c.note] : []), ...outstanding(c.basisId), ...(reported && !c.wait ? ['Independent verification of the field report'] : [])],
         source: m?.key,
-        primary: { label: 'Open full record', run: () => toFull({ kind: 'alert', alertId: c.basisId, tab: reported ? 'observations' : 'response' }), testid: 'qd-full' } };
+        issue: issueOf({ kind: 'alert', alertId: c.basisId, tab: 'response' }),
+        primary: { label: issueOf({ kind: 'alert', alertId: c.basisId, tab: 'response' }) ? OPEN_ISSUE : 'Open full record', run: () => toFull({ kind: 'alert', alertId: c.basisId, tab: reported ? 'observations' : 'response' }), testid: 'qd-full' } };
       if (!view.open!.length) view.open = ['Nothing outstanding is recorded for this item.'];
     }
   } else if (quick?.kind === 'item') {
@@ -306,7 +406,8 @@ export function Overview() {
         known: [...(al ? [`${al.title}${al.detail && al.detail !== al.meta?.why ? `: ${al.detail}` : ''}`.replace(/\.?$/, '.')] : []), ...(dec ? [`${dec.title} (${clock(dec.t)}, ${dec.by ?? 'recorded'}).`] : [])],
         open: [a.uncertain.replace(/^Outstanding: /, '')].filter(Boolean),
         source: m?.key,
-        primary: { label: a.k === 'decision' || a.k === 'review' ? 'Review decision' : a.k === 'verification' ? 'Open field report' : a.k === 'follow-up' ? 'Review in Investigation' : 'Open full record', run: () => toFull(a.target), testid: 'qd-full' } };
+        issue: issueOf(a.target),
+        primary: { label: issueOf(a.target) ? OPEN_ISSUE : a.k === 'decision' || a.k === 'review' ? 'Review decision' : a.k === 'verification' ? 'Open field report' : a.k === 'follow-up' ? 'Review in Investigation' : 'Open full record', run: () => toFull(a.target), testid: 'qd-full' } };
     }
   } else if (quick?.kind === 'ms') {
     const m = data.seq.ms.find((x) => x.id === quick.id);
@@ -316,7 +417,8 @@ export function Overview() {
         known: [`${m.key.text}`, ...((m.key.received != null && Math.abs(m.key.received - m.key.t) > 60_000) || (m.key.observed != null && Math.abs(m.key.observed - m.key.t) > 60_000) ? [`Event ${clock(m.key.observed ?? m.key.t)} · received ${clock(m.key.received ?? m.key.t)}.`] : []), ...(m.records.length ? [`${m.records.length} related record${m.records.length > 1 ? 's' : ''} at this milestone.`] : [])],
         open: [...(m.key.status === 'Reported' ? ['Independent verification of the field report'] : []), ...gaps].slice(0, 3),
         source: m.key,
-        primary: { label: 'Open full record', run: () => toFull(m.key.target.kind === 'notification' ? { kind: 'timeline', eventId: m.key.id } : m.key.target), testid: 'qd-full' },
+        issue: m.key.target.kind === 'notification' ? null : issueOf(m.key.target as Target),
+        primary: { label: m.key.target.kind !== 'notification' && issueOf(m.key.target as Target) ? OPEN_ISSUE : 'Open full record', run: () => toFull(m.key.target.kind === 'notification' ? { kind: 'timeline', eventId: m.key.id } : m.key.target), testid: 'qd-full' },
         secondary: [{ label: 'Show in full timeline', run: () => toFull({ kind: 'timeline', eventId: m.key.id }), testid: 'qd-timeline' }] };
       if (!view.open!.length) view.open = ['Nothing outstanding is recorded for this development.'];
     }
@@ -356,8 +458,8 @@ export function Overview() {
       primary: record!.status !== 'closed' ? { label: sev ? 'Reassess severity' : 'Assess severity', run: () => { setOverview({ quick: null }); window.setTimeout(() => document.querySelector<HTMLButtonElement>('[data-testid="incident-severity"]')?.click(), 0); }, testid: 'qd-assess' } : undefined };
   }
 
-  const details = <DetailsPanel head={data.head} cards={data.cards} onCard={(c, el) => q.open({ kind: 'card', id: c.eq }, el)} onDeps={() => setDeps(true)} />;
-  const attention = <AttentionPanel items={data.items} onItem={(a, el) => q.open({ kind: 'item', id: a.id }, el)} onQueue={(el) => q.open({ kind: 'queue' }, el)} />;
+  const details = <DetailsPanel record={record} head={data.head} cards={data.cards} onCard={(c, el) => (c.alertId ? q.open({ kind: 'card', id: c.eq }, el) : (setOverview({ quick: null, fromOverview: true }), useStore.getState().setNav('situation')))} onDeps={() => setDeps(true)} />;
+  const attention = <AttentionPanel room={room} t={data.asOf} onIssue={(id) => { setOverview({ quick: null, fromOverview: true }); useStore.getState().openIssue(id); }} onAll={() => toOpenIssues()} />;
   const unfolded = <Unfolded seq={data.seq} asOf={data.asOf} story sel={quick?.kind === 'ms' ? quick.id : null} onPick={(m, el) => q.open({ kind: 'ms', id: m.id }, el)} onFull={() => go({ kind: 'timeline', eventId: '' })} />;
   return (
     <div className="ov-page ob-page story" ref={ref} onScroll={(e) => setOverview({ scroll: (e.target as HTMLDivElement).scrollTop })} data-testid="page-overview">
@@ -377,6 +479,7 @@ export function ReturnToOverview() {
   const quick = useStore((s) => s.overview.quick);
   const nav = useStore((s) => s.nav);
   const setNav = useStore((s) => s.setNav);
-  if (!from || nav === 'overview') return null;
+  // The Situation Room has its own breadcrumb back to the briefing.
+  if (!from || nav === 'overview' || nav === 'situation') return null;
   return <div className="ov-return" data-testid="ov-return"><button className="link" onClick={() => setNav('overview')} data-testid="ov-return-btn"><Icon name="chevL" size={13} /> {quick ? 'Back to Quick detail' : 'Back to Incident Overview'}</button><span className="sidenote">Your place in the briefing is kept.</span></div>;
 }

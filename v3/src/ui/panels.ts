@@ -5,10 +5,9 @@ import { useStore, type State, type Nav } from '../store';
 export interface PanelDef { key: string; label: string; split?: string; pane?: 'a' | 'b'; window?: string }
 const SPLIT = (split: string, a: string, b: string): PanelDef[] => [{ key: `${split}.a`, label: a, split, pane: 'a' }, { key: `${split}.b`, label: b, split, pane: 'b' }];
 export function panelsFor(nav: Nav, knowledgeView: State['knowledgeView'], hasDocument: boolean): PanelDef[] {
-  if (nav === 'situation') return [
-    { key: 'situation.equipment', label: 'Equipment', window: 'equipment' }, { key: 'situation.log', label: 'Alert log', window: 'log' }, { key: 'situation.response', label: 'Investigation', window: 'response' },
-    ...(hasDocument ? [{ key: 'situation.document', label: 'Document', window: 'document' }] : []),
-  ];
+  // The Situation Room arranges itself: Updates and Equipment are tabs, and the response panel docks, widens and closes.
+  if (nav === 'situation') return [];
+  void hasDocument;
   if (nav === 'sitrep') return SPLIT('sitrep', 'Incident timeline', 'Reports and status');
   if (nav === 'agentlog') return SPLIT('agentlog', 'Agent tasks', 'Task detail');
   if (knowledgeView === 'documents') return SPLIT('knowledge-documents', 'Documents', 'Original document');

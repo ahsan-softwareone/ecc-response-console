@@ -342,7 +342,7 @@ function Observations({ a, inv, record, d }: { a: AlertView | null; inv: Investi
 }
 const KIND = { reading: 'Reading', 'field-report': 'Field report', 'security-report': 'Security report', 'agent-finding': 'Agent finding', 'route-assessment': 'Route assessment' } as const;
 
-function Sources({ a, d }: { a: AlertView; d: Derived }) {
+export function Sources({ a, d }: { a: AlertView; d: Derived }) {
   const openViewer = useStore((s) => s.openViewer);
   const setTrendView = useStore((s) => s.setTrendView);
   const startedAt = useStore((s) => s.startedAt); const revealedAt = useStore((s) => s.revealedAt);

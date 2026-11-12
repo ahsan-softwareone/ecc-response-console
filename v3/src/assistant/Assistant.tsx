@@ -6,7 +6,7 @@ import { groupPassages, PassageCard, ScopeSelects } from '../pages/Knowledge';
 import { ASSISTANT_DEFAULT, useStore } from '../store';
 import { Divider } from '../ui/Split';
 import { Icon } from '../ui/Icon';
-import { IconButton, Popover, SeverityChip } from '../ui/ui';
+import { IconButton, Popover } from '../ui/ui';
 import { Composer } from './Composer';
 import { InvestigationEntry } from './Investigation';
 
@@ -20,9 +20,6 @@ export function Assistant({ overlay, width }: { overlay: boolean; width: number 
   const setOpen = useStore((s) => s.setAssistantOpen);
   const incidentId = useStore((s) => s.incidentId);
   const record = useStore((s) => s.records[s.incidentId]);
-  const selectAlert = useStore((s) => s.selectAlert);
-  const setNav = useStore((s) => s.setNav);
-  const alertUser = useStore((s) => s.alertUser);
   const context = useStore((s) => s.assistantContext);
   const setContext = useStore((s) => s.setAssistantContext);
   const dashboard = useStore((s) => s.dashboard);
@@ -39,7 +36,6 @@ export function Assistant({ overlay, width }: { overlay: boolean; width: number 
   useEffect(() => { lastReplyRef.current?.scrollIntoView({ block: 'start' }); }, [replyCount]);
   useEffect(() => { if (entries.length) endRef.current?.scrollIntoView({ block: 'end' }); }, [entries.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const critical = d.alerts.find((a) => a.def.severity === 'critical' && a.condition === 'active' && !alertUser[a.id]?.readAt) ?? d.alerts.find((a) => a.def.severity === 'critical' && a.condition === 'active');
   const lastReplyIdx = messages.map((m) => m.role).lastIndexOf('assistant');
   const attachedAlert = context.alertId ? d.alertById.get(context.alertId) : undefined;
   const attachable = d.alerts.filter((a) => ATTENTION.includes(a.condition)).slice(0, 12);
@@ -62,11 +58,6 @@ export function Assistant({ overlay, width }: { overlay: boolean; width: number 
         <span className="spacer" />
         <IconButton className="sm" name="close" title="Close assistant" onClick={() => setOpen(false)} testId="assistant-close" />
       </div>
-      {critical && (
-        <button className="as-critical" onClick={() => { setNav('situation'); selectAlert(critical.id); }} data-testid="assistant-critical" title="Open this alert on Situation">
-          <SeverityChip s="critical" /><span className="grow">{critical.def.title.startsWith(critical.def.equipmentId) ? critical.def.title : `${critical.def.equipmentId} · ${critical.def.title}`}</span><span className="num sidenote">{clock(critical.time)}</span>
-        </button>
-      )}
       <div className="as-scope">
         <div className="as-ctxline">
           <span className="sidenote grow" data-testid="assistant-context" title="Fixed rules and keyword search; no language model is connected">{record ? <>{record.status === 'closed' ? 'Closed record' : 'Incident'} {incidentId} · no language model</> : 'No incident · Knowledge search · no language model'}</span>

@@ -19,16 +19,36 @@ let pass = 0, fail = 0;
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const errors = [];
 
+/** Test harness. The response drawer is modal: a click outside it closes it. A click aimed at the workspace while the drawer is open
+ *  therefore closes the drawer first, the way a person would; clicks inside the drawer are unchanged. */
+function drawerAware(pg) {
+  const click = pg.click.bind(pg);
+  pg.click = async (sel, o) => {
+    const covered = await pg.evaluate((s) => { try { const el = document.querySelector(s); return !!el && !!document.querySelector('[data-testid="drawer-backdrop"]') && !el.closest('[data-testid="room-dock"]') && !!el.closest('.sr-main, .sr-bar'); } catch { return false; } }, sel).catch(() => false);
+    if (covered) { await click('[data-testid="panel-close"]'); await pg.waitForSelector('[data-testid="drawer-backdrop"]', { state: 'detached' }).catch(() => {}); }
+    const r = await click(sel, o);
+    // These checks read individual record entries: arriving on the Timeline, open every history group (collapsed by default) and the Sit. Rep tab.
+    if (/data-testid="(nav-sitrep|ov-full-timeline|link-record)"/.test(String(sel))) {
+      await pg.evaluate(() => document.querySelectorAll('[data-testid="moment-toggle"][aria-expanded="false"]').forEach((b) => b.click())).catch(() => {});
+    }
+    return r;
+  };
+  // Notes and who-was-told sit behind Add details on Accept; open it before filling them, as a person would.
+  const openDetails = async (sel) => { if (/rationale|decision-(to|via|within)/.test(String(sel))) await pg.evaluate(() => { const d = document.querySelector('[data-testid="decision-details"]'); if (d && !d.open) d.open = true; }).catch(() => {}); };
+  const fill0 = pg.fill.bind(pg); pg.fill = async (sel, v, o) => { await openDetails(sel); return fill0(sel, v, o); };
+  const so0 = pg.selectOption.bind(pg); pg.selectOption = async (sel, v, o) => { await openDetails(sel); return so0(sel, v, o); };
+  return pg;
+}
 async function fresh({ w = 1440, h = 900 } = {}) {
   const ctx = await browser.newContext({ viewport: { width: w, height: h } });
-  const page = await ctx.newPage();
+  const page = drawerAware(await ctx.newPage());
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('favicon')) errors.push(m.text()); });
   await page.goto(URL); await page.waitForSelector(T('no-incident'));
   await page.waitForFunction(() => window.__ecc?.retrieval?.size > 0, null, { timeout: 60000 });
   return page;
 }
-const training = async (p, steps = 1) => { await p.click(T('start-training')); await p.click(T('start-submit')); await p.waitForSelector(T('dock')); await next(p, steps - 1); };
+const training = async (p, steps = 1) => { await p.click(T('start-training')); await p.click(T('start-submit')); await p.waitForSelector(T('dock')); await p.click(T('view-updates')); await next(p, steps - 1); };
 // Reveal a step and let its events pass, so the record holds what the scenario has released.
 const next = async (p, n = 1) => { for (let i = 0; i < n; i++) { await p.click(T('facil-next')); await sleep(150); await p.evaluate(() => { const s = window.__ecc.store.getState(); return s.skewMs; }); } await settle(p); };
 const settle = async (p) => { await p.evaluate(() => { const { store, setClockSkew } = window.__ecc; const s = store.getState(); if (s.revealedAt.length > 1) { const skew = s.skewMs + 70000; store.setState({ skewMs: skew }); setClockSkew(skew); } }); await sleep(2200); };
@@ -36,8 +56,11 @@ const openPanel = async (p) => { if (!(await p.locator(T('assistant')).count()))
 const rec = (p) => p.evaluate(() => { const s = window.__ecc.store.getState(); return s.records[s.incidentId]; });
 const stored = (p, id) => p.evaluate((rid) => new Promise((res, rej) => { const q = indexedDB.open('ecc-v3'); q.onerror = () => rej(q.error); q.onsuccess = () => { const g = q.result.transaction('incidents').objectStore('incidents').get(rid); g.onsuccess = () => res(g.result); g.onerror = () => rej(g.error); }; }), id);
 const ask = async (p, text) => { await openPanel(p); await p.click(T('mode-ask')); await p.waitForSelector(`${T('assistant-send')}`); const before = await p.locator(T('investigation')).count(); await p.fill(T('assistant-input'), text); await p.click(T('assistant-send')); await p.waitForFunction((n) => document.querySelectorAll('[data-testid="investigation"]').length > n, before); return p.locator(T('investigation')).last(); };
-const report = async (p, text, o = {}) => { await openPanel(p); await p.click(T('mode-report')); await p.fill(T('obs-text'), text); if (o.equipment) await p.selectOption(T('obs-equipment'), o.equipment); if (o.source) await p.selectOption(T('obs-source'), o.source); if (o.detail) await p.fill(T('obs-source-detail'), o.detail); if (o.question) await p.fill(T('obs-question'), o.question); await p.click(T('obs-submit')); };
+const report = async (p, text, o = {}) => { await openPanel(p); await p.click(T('mode-report')); await p.fill(T('obs-text'), text); if (o.equipment) await p.selectOption(T('obs-equipment'), o.equipment); if ((o.source || o.detail || o.question) && !(await p.locator(T('obs-more')).evaluate((d) => d.open))) await p.click(`${T('obs-more')} > summary`); if (o.source) await p.selectOption(T('obs-source'), o.source); if (o.detail) await p.fill(T('obs-source-detail'), o.detail); if (o.question) await p.fill(T('obs-question'), o.question); await p.click(T('obs-submit')); };
 const done = (entry) => entry.locator(`${T('assistant-reply')}`).first().waitFor({ timeout: 20000 });
+/** Full equipment cards (Show all readings); back to the strip and the Incident Updates view. */
+const showReadings = async (p) => { if ((await p.getAttribute(T('watch-toggle'), 'aria-expanded')) === 'false') await p.click(T('watch-toggle')); };
+const toUpdates = async (p) => { if ((await p.getAttribute(T('watch-toggle'), 'aria-expanded')) === 'true') await p.click(T('watch-toggle')); await p.click(T('view-updates')); };
 async function step(name, fn) {
   if (!want(name.split(':')[0])) return;
   try { await fn(); pass++; console.log('PASS', name); } catch (e) { fail++; console.log('FAIL', name, '-', String(e.message ?? e).split('\n').slice(0,3).join(' ')); }
@@ -70,6 +93,7 @@ await step('a: question from the global Assistant: recorded, cited, opens docume
   const st = await p.evaluate(() => window.__ecc.store.getState().viewer);
   assert(st.revision === rev && st.revision === pinned.revision && st.page === pinned.page && st.docId === pinned.docId, `viewer at the cited document, revision and page (${st.docId} ${st.revision} p.${st.page})`);
   assert((await p.locator(`${T('viewer')}[data-page="${pinned.page}"]`).count()) >= 1, 'the viewer shows that page');
+  if (await p.locator(T('viewer-overlay')).count()) await p.click(`${T('viewer-overlay')} ${T('viewer-close')}`);
   await p.keyboard.press('Escape'); await sleep(200);
   // Reading opens its own source.
   await e.locator(`${T('response-evidence')} > summary`).click();
@@ -78,7 +102,7 @@ await step('a: question from the global Assistant: recorded, cited, opens docume
   const other = e.locator(`${T('evidence-item')}[data-kind="observation"] ${T('evidence-open')}`).first();
   if (await other.count()) { await other.click(); assert(await e.locator(T('evidence-details')).count() >= 1, 'source details'); }
   // Recommendation opens in the existing workspace; nothing is decided.
-  await e.locator(T('open-workspace')).click(); await p.waitForSelector(`${T('response-detail')}[data-alert="a3-1"]`);
+  await e.locator(T('open-workspace')).click(); await p.waitForSelector(`${T('issue-panel')}[data-issue="pressure"]`);
   const r2 = await rec(p);
   assert(!r2.events.some((x) => x.kind === 'decision'), 'no decision from a question');
   assert((await p.locator(T('decision-form')).count()) === 1, 'the existing decision form is what appears');
@@ -87,13 +111,13 @@ await step('a: question from the global Assistant: recorded, cited, opens docume
 
 await step('b: Ask about this from equipment and alert: context visible, removable, changeable; workspace preserved', async () => {
   const p = await fresh(); await training(p, 3);
-  await p.click(`${T('card-D-0001')} ${T('ask-about-D-0001')}`); await p.waitForSelector(T('assistant'));
+  await showReadings(p); await p.click(`${T('card-D-0001')} ${T('ask-about-D-0001')}`); await p.waitForSelector(T('assistant'));
   assert((await p.textContent(T('context-equipment'))).includes('D-0001'), 'equipment attached');
   await p.click(T('context-remove-equipment')); assert(await p.locator(T('context-equipment')).count() === 0, 'removed');
   await p.click(T('context-attach')); await p.click(T('attach-eq-DS-029')); assert((await p.textContent(T('context-equipment'))).includes('DS-029'), 'changed');
   await p.click(T('assistant-close'));
-  await p.click(T('alert-a3-1')); await p.waitForSelector(T('ask-about-alert'));
-  await p.fill(T('report-open') + ', ' + T('rationale'), 'half-written rationale').catch(() => {});
+  await toUpdates(p); await p.click(T('alert-a3-1')); await p.waitForSelector(T('ask-about-alert'));
+  await p.click(T('decide-approved')); await p.fill(T('rationale'), 'half-written rationale');
   await p.click(T('ask-about-alert')); await p.waitForSelector(T('context-alert'));
   assert((await p.textContent(T('context-alert'))).includes('D-0001 pressure rising'), 'alert attached');
   assert((await p.inputValue(T('rationale'))) === 'half-written rationale', 'half-written form kept');
@@ -114,7 +138,7 @@ await step('c: field observation at an early stage: saved, attributed, labelled,
   assert((await p.textContent(T('obs-time-default'))).includes('Now'), 'observed time defaults to now');
   await report(p, 'Field operator reports deluge is not working', { equipment: 'DS-029', source: 'field', detail: 'Radio from fire team', question: 'What does this change?' });
   await p.waitForSelector(T('obs-confirm'));
-  assert((await p.textContent(T('obs-confirm'))).includes('Observation recorded.'), 'confirmation');
+  assert(/^Added to (Open issues as a new issue: )?“.+”$/.test(await p.textContent(T('obs-result'))), 'one clear result: where it went');
   const r = await rec(p); const ev = r.events.find((x) => x.meta?.userSubmitted);
   assert(ev && ev.title === 'Field operator reports deluge is not working' && ev.by.includes('N. Al-Harbi') && ev.meta.sourceLabel === 'Field report' && ev.meta.evidence === 'reported' && ev.kind === 'observation', 'wording, author, source and label');
   assert(ev.t === ev.meta.receivedAt, 'event time is the actual received time');
@@ -135,13 +159,13 @@ await step('c: field observation at an early stage: saved, attributed, labelled,
   // The report also appears, labelled, on the alert's Observations tab for its equipment.
   await p.click(T('assistant-close'));
   await p.evaluate(() => window.__ecc.store.getState().addEquipment('DS-029'));
-  await p.click(T('alert-a2-1')); await p.click(T('tab-observations')); await p.waitForSelector(T('observations'));
-  assert((await p.locator(`${T('observation')}[data-user="true"]`).count()) === 0, 'a report on DS-029 is not listed under D-0029');
-  await p.click(T('tab-response')); await p.evaluate(() => window.__ecc.store.getState().selectAlert(null));
+  await p.click(T('alert-a2-1')); await p.click(`${T('related')} > summary`); await p.click(T('related-in-feed'));
+  assert((await p.locator('.sr-row[data-origin="person"]').count()) === 0, 'a report on DS-029 is not listed under the D-0029 issue');
+  await p.click(T('feed-scope'));
   await openPanel(p);
   // Timeline entry, original wording, link to the exchange.
-  await p.click(T('nav-sitrep')); await p.waitForSelector(T('timeline'));
-  await p.fill(T('timeline-search'), 'deluge is not working');
+  await p.click(T('nav-sitrep')); await p.waitForSelector(T('story'));
+  await p.fill(T('timeline-search'), 'deluge is not working'); await p.clock.runFor(300);
   const rows = p.locator(`${T('timeline-row')}[data-kind="observation"]`);
   assert(await rows.count() === 1, 'one timeline observation');
   assert((await rows.first().textContent()).includes('Reported · Field report: Radio from fire team'), 'source on the timeline');
@@ -228,7 +252,7 @@ await step('g: paused and stopped: observations save, pending is plain, agent no
   assert((await p.getAttribute(T('agent-status'), 'data-state')) === 'paused', 'paused');
   await report(p, 'Deluge DS-029 is not working', { equipment: 'DS-029' });
   await p.waitForSelector(T('obs-confirm'));
-  assert((await p.textContent(T('obs-confirm'))).includes('Analysis has not started'), 'confirmation is honest');
+  assert((await p.textContent(T('obs-confirm'))).includes('ECC has not assessed it yet because the agent is not running.'), 'confirmation is honest');
   const e = p.locator(T('investigation')).last();
   await e.locator(T('investigation-pending')).waitFor();
   assert((await e.locator(T('investigation-pending')).getAttribute('data-reason')) === 'paused', 'pending because paused');
@@ -300,13 +324,13 @@ await step('j: recommendation and decision workflow intact; the chain is traceab
   const p = await fresh(); await training(p, 3);
   const e = await ask(p, 'Why is D-0001 pressure continuing to rise?'); await done(e);
   await e.locator(T('open-workspace')).click(); await p.waitForSelector(T('decision-form'));
-  await p.click(T('decide-approved')); await p.fill(T('rationale'), 'Agreed'); await p.locator(`${T('decision-form')} button.primary`).click();
+  await p.click(T('decide-approved')); await p.fill(T('rationale'), 'Agreed'); await p.click(T('record-decision'));
   await sleep(1200);
   const r = await rec(p);
   assert(r.events.filter((x) => x.kind === 'decision').length === 1, 'one decision');
-  await e.locator(`${T('response-details')} > summary`).click();
+  await openPanel(p); await e.locator(`${T('response-details')} > summary`).click();
   const trace = await e.locator(T('investigation-trace')).textContent();
-  assert(/Approved/.test(trace) && /None reported/.test(trace) && /None observed/.test(trace), `trace reaches the decision: ${trace}`);
+  assert(/Accepted/.test(trace) && /None reported/.test(trace) && /None observed/.test(trace), `trace reaches the decision: ${trace}`);
   assert(/not an instruction/i.test(await e.locator(T('response-details')).textContent()), 'plain statement');
 });
 
@@ -344,18 +368,16 @@ await step('l: Sit. Rep and Agent Log: concise entries and task depth; the SITRE
   assert(!/WR NGL|East Terminal|Loading bay/.test(t), 'no other site appears');
   await report(p, 'Deluge is not working', { equipment: 'DS-029' }); await p.waitForSelector(T('obs-confirm'));
   await done(p.locator(T('investigation')).last());
-  await p.click(T('nav-sitrep')); await p.waitForSelector(T('timeline'));
-  await p.click(T('timeline-filter')); await p.click(T('cat-Investigation')); await p.keyboard.press('Escape');
-  const rows = p.locator(T('timeline-row'));
+  await p.click(T('nav-sitrep')); await p.waitForSelector(T('story'));
+  for (let k = 0; k < 200 && await p.locator(`${T('moment-toggle')}[aria-expanded="false"]`).count(); k++) await p.locator(`${T('moment-toggle')}[aria-expanded="false"]`).first().click();
+  const rows = p.locator(`${T('timeline-row')}:has(${T('open-exchange')})`);
   assert(await rows.count() >= 3, 'investigation entries in the timeline');
   await rows.first().locator(T('open-exchange')).click(); await p.waitForSelector(T('assistant'));
   await p.click(T('assistant-close'));
-  await p.click(T('sitrep-new')).catch(() => {});
-  await p.locator('button:has-text("Reports")').first().click({ timeout: 800 }).catch(() => {});
-  await p.waitForSelector(T('sitrep-new')); await p.click(T('sitrep-new')); await p.waitForSelector(T('sitrep-input-situation'));
+  await p.waitForSelector(T('sitrep-generate')); await p.click(T('sitrep-generate')); await p.waitForSelector(T('sitrep-input-situation'));
   const sit = await p.inputValue(T('sitrep-input-situation')); const out = await p.inputValue(T('sitrep-input-outstanding'));
-  assert(sit.includes('Reported, not independently verified: "Deluge is not working"'), 'reported state carried');
-  assert(out.includes('Unreconciled evidence'), 'conflict listed as outstanding');
+  console.log('SITREP situation:', sit, '\nresponse:', await p.inputValue(T('sitrep-input-response')), '\noutstanding:', out);
+  assert(/Conflicting evidence, not reconciled: [^\n]*Deluge is not working|Conflicting evidence, not reconciled: [^\n]*vs/.test(out), 'the unreconciled conflict needs attention');
   assert(!sit.includes('similar incidents') && !out.includes('similar incidents'), 'the question is not in the SITREP');
   await p.click(T('nav-agentlog')); await p.waitForSelector(T('page-agentlog'));
   const task = p.locator(`[data-category="Investigations"]`);
@@ -413,7 +435,9 @@ await step('n: layout in both themes at 1440x900 and 1366x768', async () => {
   }
 });
 
-const openObs = async (p) => { await p.click(T('tab-observations')); await p.waitForSelector(T('observations')); };
+/** Reports made in ECC appear in the Situation Room's feed as people updates. */
+const openObs = async (p) => { await p.click(T('nav-situation')); await toUpdates(p); await p.click(T('origin-people')); await p.waitForSelector('.sr-row[data-origin="person"]'); };
+const personRow = (p) => p.locator('.sr-row[data-origin="person"]');
 const closeA = async (p) => { if (await p.locator(T('assistant')).count()) await p.click(T('assistant-close')); };
 const lastInv = (p) => p.evaluate(() => { const s = window.__ecc.store.getState(); return s.records[s.incidentId].investigations.at(-1); });
 const waitStatus = (p, st) => p.waitForFunction((x) => { const s = window.__ecc.store.getState(); return s.records[s.incidentId].investigations.at(-1)?.status === x; }, st, { timeout: 15000 });
@@ -469,18 +493,16 @@ await step('p: evidence-backed assessment: observation to response to original d
   await report(p, 'Deluge DS-029 has no water at the propane area', { equipment: 'DS-029', source: 'field', detail: 'Fire team leader' }); await p.waitForSelector(T('obs-confirm'));
   await waitStatus(p, 'complete'); await closeA(p);
   await openObs(p);
-  const row = p.locator(`${T('observation')}[data-user="true"]`).first();
+  const row = personRow(p).first();
   assert((await row.locator(T('analysis-status')).getAttribute('data-status')) === 'assessed', 'assessed');
   assert(/Recommendation available|Conflicting evidence/.test(await row.locator(T('observation-outcome')).textContent()), 'outcome summary');
-  assert(await row.locator(T('observation-detail')).count() === 0, 'row concise until selected');
-  await row.locator(T('observation-select')).click();
-  await row.locator(T('observation-detail')).waitFor();
+  await row.locator('.sr-row-main').click(); await p.waitForSelector(`${T('issue-panel')}[data-issue="deluge"]`);
   const inv = await lastInv(p);
-  for (const tab of ['response', 'sources', 'observations']) { await p.click(T(`tab-${tab}`)); await sleep(80); assert((await p.textContent(T('concern-label'))).includes('no water'), `label on ${tab}`); assert((await p.evaluate(() => window.__ecc.store.getState().selectedInvestigationId)) === inv.id, `selection kept on ${tab}`); }
-  await p.click(T('tab-response')); await p.waitForSelector(T('concern-response'));
-  await p.click(T('concern-open-recommendation')); await p.waitForSelector(`${T('response-detail')}[data-alert="a4-1"]`);
-  assert((await p.getAttribute(T('concern-bar'), 'data-kind')) === 'alert' && await p.locator(T('decision-form')).count() === 1, 'existing decision workflow');
-  await p.click(T('concern-back')); await p.waitForSelector(T('concern-response'));
+  // A linked report opens its issue, with the report you clicked marked and ECC's assessment of it beneath.
+  const mine = p.locator(`${T('issue-panel')} [data-opened]`);
+  assert(await mine.count() === 1 && (await mine.textContent()).includes('no water') && (await p.evaluate(() => window.__ecc.store.getState().selectedInvestigationId)) === inv.id, 'the issue opens with the report marked');
+  assert(await p.locator(T('decision-form')).count() === 1, 'existing decision workflow, in the issue');
+  await p.waitForSelector(T('concern-response'));
   await p.click(T('concern-to-sources')); await p.waitForSelector(`${T('sources')}[data-scope="concern"]`);
   const used = p.locator(`${T('sources-used')} ${T('source-row')}`);
   const kinds = await used.evaluateAll((els) => els.map((x) => x.getAttribute('data-kind')));
@@ -492,35 +514,34 @@ await step('p: evidence-backed assessment: observation to response to original d
   const v = await p.evaluate(() => window.__ecc.store.getState().viewer);
   assert(v.docId === pinned.docId && v.revision === pinned.revision && v.page === pinned.page, 'original evidence at the cited revision and page');
   assert((await p.textContent(T('concern-label'))).includes('no water'), 'selection survives opening the document');
+  assert(await p.locator(T('viewer-overlay')).count() === 1, 'the document opens in a dialog'); await p.click(`${T('viewer-overlay')} ${T('viewer-close')}`);
+  await p.click(T('concern-to-sources')); await p.waitForSelector(T('evidence-dialog'));
   await p.locator(`${T('source-row')}[data-kind="reading"] ${T('source-inspect')}`).first().click(); await p.waitForSelector(T('trend-close')); await p.click(T('trend-close'));
+  await p.click(T('concern-to-sources')); await p.waitForSelector(T('evidence-dialog'));
   await p.locator(`${T('source-row')}[data-kind="reported-observation"] ${T('source-inspect')}`).click(); assert(await p.locator(T('source-details')).count() === 1, 'a report has its own inspection view');
   assert(await p.locator(T('sources-other')).count() <= 1, 'other material kept apart');
   // Reload.
   await p.reload(); await p.waitForSelector(T('dock'));
-  await p.waitForSelector(T('concern-label'));
-  assert((await p.textContent(T('concern-label'))).includes('no water'), 'selected concern survives reload');
-  await p.click(T('tab-observations'));
-  assert((await p.locator(`${T('observation')}[data-user="true"] ${T('link-recommendation')}`).count()) === 1, 'link to the recommendation survives reload');
-  // Back to an alert from its linked report.
-  await p.locator(`${T('observation')}[data-user="true"] ${T('link-recommendation')}`).click(); await p.waitForSelector(T('linked-concerns'));
-  assert((await p.textContent(T('linked-concerns'))).includes('no water'), 'alert links to its report');
+  await p.click(T('evidence-back')).catch(() => {});
+  await p.waitForSelector(`${T('issue-panel')}[data-issue="deluge"] [data-opened]`);
+  assert((await p.textContent(`${T('issue-panel')} [data-opened]`)).includes('no water'), 'the opened report survives reload');
+  assert((await p.locator(T('concern-open-recommendation')).count()) === 1, 'link to the recommendation survives reload');
 });
 
 await step('q: report conflicting with readings shows conflict as the outcome; tab scope is never misleading', async () => {
   const p = await fresh(); await training(p, 3);
   await report(p, 'D-0001 pressure is falling, says the field team', { equipment: 'D-0001' }); await p.waitForSelector(T('obs-confirm'));
   await waitStatus(p, 'complete'); await closeA(p);
-  await p.click(T('alert-a2-1')); await p.waitForSelector(`${T('response-detail')}[data-alert="a2-1"]`);
-  await openObs(p);
-  assert((await p.getAttribute(T('observations'), 'data-scope')) === 'equipment' && (await p.textContent(T('observations-scope'))).startsWith('D-0029'), 'scope labelled');
-  assert(await p.locator(`${T('observation')}[data-user="true"]`).count() === 0 && await p.locator(T('obs-hidden-reports')).count() === 1, 'a report on other equipment is not shown as if it were about this alert');
-  await p.click(T('obs-scope-incident'));
-  assert((await p.getAttribute(T('observations'), 'data-scope')) === 'incident', 'whole incident labelled');
-  const row = p.locator(`${T('observation')}[data-user="true"]`);
+  await p.click(T('nav-situation')); await p.click(T('view-updates')); await p.click(T('alert-a2-1')); await p.waitForSelector(`${T('issue-panel')}[data-issue="fire"]`);
+  await p.click(`${T('related')} > summary`); await p.click(T('related-in-feed'));
+  assert(await p.locator('.sr-row[data-origin="person"]').count() === 0, 'a report on other equipment is not shown as if it were about this issue');
+  await p.click(T('feed-scope'));
+  const row = personRow(p);
   assert((await row.locator(T('observation-outcome')).textContent()) === 'Conflicting evidence requires review', 'conflict outcome');
-  await row.locator(T('observation-select')).click(); await p.click(T('tab-response'));
+  assert(/D-0001/.test(await row.textContent()), 'its equipment is named');
+  await row.locator('.sr-row-main').click(); await p.waitForSelector(T('concern-response'));
   assert(await p.locator(T('concern-conflict')).count() === 1, 'both sides shown');
-  assert(await p.locator(`${T('response-detail')}`).count() === 0, 'the alert response is not shown as the answer');
+  assert(await p.locator(`${T('issue-panel')} [data-opened] ${T('concern-label')}`).count() === 1 && await p.locator(`${T('opened-assessment')} ${T('concern-conflict')}`).count() === 1, 'the report you opened is marked, and the conflict is its own assessment, beneath it, not the issue response');
   await p.screenshot({ path: `${OUT}/conflict-tab-1440-light.png` });
 });
 
@@ -528,9 +549,9 @@ await step('r: an observation requiring no additional response says why; not cal
   const p = await fresh(); await training(p, 1);
   await report(p, 'FH-01 header pressure is steady', { equipment: 'FH-01', source: 'control-room' }); await p.waitForSelector(T('obs-confirm'));
   await waitStatus(p, 'complete'); await closeA(p);
-  await openObs(p); const row = p.locator(`${T('observation')}[data-user="true"]`);
+  await openObs(p); const row = personRow(p);
   assert((await row.locator(T('observation-outcome')).textContent()) === 'No additional response identified', 'outcome');
-  await row.locator(T('observation-select')).click(); await p.click(T('tab-response')); await p.waitForSelector(T('concern-response'));
+  await row.locator('.sr-row-main').click(); await p.waitForSelector(T('concern-response'));
   assert((await p.textContent(T('concern-why-none'))).includes('matches the current reading'), 'reason');
   assert((await p.getAttribute(T('concern-next'), 'data-action')) === 'none', 'no action required');
   assert((await p.textContent(T('concern-attribution'))).includes('FH-01'), 'attributed');
@@ -541,10 +562,10 @@ await step('s: pending while paused: saved, honest, existing Resume; failed anal
   const p = await fresh(); await training(p, 2);
   await p.click(T('agent-status')); await p.locator('button:has-text("Pause")').first().click(); await p.keyboard.press('Escape'); await sleep(200);
   await report(p, 'D-0029 level is falling', { equipment: 'D-0029' }); await p.waitForSelector(T('obs-confirm')); await closeA(p);
-  await openObs(p); const row = p.locator(`${T('observation')}[data-user="true"]`).first();
+  await openObs(p); const row = personRow(p).first();
   assert((await row.locator(T('analysis-status')).getAttribute('data-status')) === 'awaiting', 'awaiting analysis');
-  assert(await p.locator(T('observations-badge')).count() === 1, 'tab shows something needs follow-through');
-  await row.locator(T('observation-select')).click(); await p.click(T('tab-response'));
+  assert((await row.getAttribute('data-place')) === 'joins' && /Added to/.test(await row.textContent()), 'goes straight into its issue, even before ECC assesses it');
+  await row.locator('.sr-row-main').click(); await p.waitForSelector(T('concern-response'));
   assert((await p.textContent(T('concern-next-text'))).includes('agent is paused'), 'why it is pending');
   assert((await p.textContent(T('concern-no-assessment'))).includes('has not considered'), 'not considered, honestly');
   assert((await p.getAttribute(T('agent-status'), 'data-state')) === 'paused', 'stays paused');
@@ -594,19 +615,42 @@ await step('u: affected views in both themes and sizes', async () => {
     await closeA(p);
     for (const theme of ['light', 'dark']) {
       await p.evaluate((x) => window.__ecc.store.getState().setTheme(x), theme); await sleep(150);
-      await p.evaluate(() => { const s = window.__ecc.store.getState(); const i = s.records[s.incidentId].investigations; s.selectConcern(i[1].id, 'observations'); });
-      await sleep(200); await p.screenshot({ path: `${OUT}/tab-obs-${w}-${theme}.png` });
+      await p.evaluate(() => { const s = window.__ecc.store.getState(); s.setNav('situation'); const i = s.records[s.incidentId].investigations; s.selectConcern(i[1].id, 'response'); });
+      await sleep(200); await p.screenshot({ path: `${OUT}/report-feed-${w}-${theme}.png` });
       for (const tab of ['response', 'sources']) {
-        await p.click(T(`tab-${tab}`)); await sleep(150);
-        const bad = await p.evaluate(() => { const win = document.querySelector('[data-window="response"]'); const wr = win.getBoundingClientRect(); const out = []; for (const el of win.querySelectorAll('button, .chip, .srcrow, .concern-next, .concern-bar')) { const r = el.getBoundingClientRect(); if (r.width && (r.right > wr.right + 1 || r.left < wr.left - 1)) out.push(el.getAttribute('data-testid') || el.className); } return { out, h: win.querySelector('.win-h').scrollWidth > win.querySelector('.win-h').clientWidth }; });
+        await p.evaluate((t) => window.__ecc.store.getState().setResponseTab(t), tab); await sleep(150);
+        const bad = await p.evaluate(() => { const win = document.querySelector('[data-testid="evidence-dialog"]') ?? document.querySelector('[data-testid="update-panel"]') ?? document.querySelector('[data-testid="issue-panel"]'); const wr = win.getBoundingClientRect(); const out = []; for (const el of win.querySelectorAll('button, .chip, .srcrow, .concern-next')) { const r = el.getBoundingClientRect(); if (r.width && (r.right > wr.right + 1 || r.left < wr.left - 1)) out.push(el.textContent.slice(0, 30)); } return { out, h: document.documentElement.scrollWidth > innerWidth }; });
         assert(!bad.out.length && !bad.h, `${w} ${theme} ${tab}: ${bad.out.join(', ')}`);
-        await p.screenshot({ path: `${OUT}/tab-${tab}-${w}-${theme}.png` });
+        await p.screenshot({ path: `${OUT}/report-${tab}-${w}-${theme}.png` });
       }
       await p.evaluate(() => { const s = window.__ecc.store.getState(); const i = s.records[s.incidentId].investigations; s.selectConcern(i[0].id, 'response'); }); await sleep(200);
       await p.screenshot({ path: `${OUT}/tab-clarify-${w}-${theme}.png` });
     }
     await p.context().close();
   }
+});
+
+await step('v: Report an observation: one question, equipment if known, Save report; one clear result, with View report; it always lands in Open issues', async () => {
+  const p = await fresh(); await training(p, 4);
+  await openPanel(p); await p.click(T('mode-report'));
+  assert(await p.locator(`${T('obs-form')} :is(input, select, textarea):visible`).count() === 2 && (await p.textContent(T('obs-submit'))) === 'Save report', 'one short form: what happened, equipment if known, Save report');
+  // Known equipment: added to its issue at once, and it stays there while ECC finishes its assessment.
+  await p.fill(T('obs-text'), 'Water now visible at the DS-029 nozzles'); await p.selectOption(T('obs-equipment'), 'DS-029'); await p.click(T('obs-submit'));
+  await p.waitForSelector(T('obs-result'));
+  const r1 = await p.textContent(T('obs-result'));
+  assert(r1 === 'Added to “Deluge on the propane area: no water flow”', `known equipment: ${r1}`);
+  await sleep(4000); assert(await p.textContent(T('obs-result')) === r1, 'the result holds while ECC assesses the report');
+  await p.click(T('obs-view')); await p.waitForSelector(`${T('issue-panel')}[data-issue="deluge"] [data-opened]`);
+  await p.keyboard.press('Escape'); await p.click(T('obs-done'));
+  // Equipment not known: saved to Incident Updates for review; leave it and carry on.
+  await p.fill(T('obs-text'), 'Strong smell of gas near the north gate'); await p.click(T('obs-submit'));
+  await p.waitForSelector(T('obs-result'));
+  assert(await p.textContent(T('obs-result')) === 'Added to Open issues as a new issue: “Strong smell of gas near the north gate”', `unknown equipment: a new issue (${await p.textContent(T('obs-result'))})`);
+  await p.click(T('obs-view')); await p.waitForSelector(`${T('issue-panel')} [data-opened]`);
+  assert(await p.locator(T('review-list')).count() === 0, 'nothing waits in Needs review');
+  await p.keyboard.press('Escape'); await p.click(T('obs-done'));
+  assert(await p.locator(T('obs-confirm')).count() === 0 && await p.inputValue(T('obs-text')) === '', 'the form is ready for the next one');
+  await p.context().close();
 });
 
 await browser.close();
