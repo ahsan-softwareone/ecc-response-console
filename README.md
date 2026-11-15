@@ -1,4 +1,6 @@
-# ECC
+# ECC Response Console
+
+Emergency Command Center Response Console: a training application for following an incident, deciding on recommendations and issuing Sit. Reps (simulated, no live data).
 
 Agentic emergency-response support prototype. The current version is **v3**, in [`v3/`](v3/). All operations are simulated, and all data, limits and procedure wording are illustrative.
 
